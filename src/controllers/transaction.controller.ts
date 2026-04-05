@@ -692,19 +692,16 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
     const webhookUrl = buildNowPaymentsWebhookUrl(req);
 
     const payload: Record<string, unknown> = {
-      price_amount: amount,
-      price_currency: "brl",
-      pay_currency: payCurrency,
-      order_id: transaction._id.toString(),
-      order_description: description,
+  price_amount: amount,
+  price_currency: "brl",
+  pay_currency: payCurrency,
+  order_id: transaction._id.toString(),
+  order_description: description,
+};
 
-    ipn_callback_url: "https://orionpay-backend-production.up.railway.app/api/transactions/webhook",
-    
-    };
-
-    if (webhookUrl) {
-      payload.ipn_callback_url = webhookUrl;
-    }
+if (webhookUrl) {
+  payload.ipn_callback_url = webhookUrl;
+}
 
     const { data } = await axios.post<Record<string, unknown>>(
       "https://api.nowpayments.io/v1/payment",
