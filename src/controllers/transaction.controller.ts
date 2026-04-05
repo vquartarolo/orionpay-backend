@@ -697,6 +697,9 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
       pay_currency: payCurrency,
       order_id: transaction._id.toString(),
       order_description: description,
+
+    ipn_callback_url: "https://orionpay-backend-production.up.railway.app/api/transactions/webhook",
+    
     };
 
     if (webhookUrl) {
