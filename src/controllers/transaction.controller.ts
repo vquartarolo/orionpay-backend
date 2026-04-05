@@ -232,7 +232,11 @@ async function creditWalletAfterChargeApproval(transactionId: string, req: Reque
     return { ok: false, code: 400, msg: "A transação informada não é PIX nem cripto." };
   }
 
-  if (transaction.expiresAt && new Date(transaction.expiresAt) <= new Date() && transaction.status === "pending") {
+  if (
+    transaction.expiresAt &&
+    new Date(transaction.expiresAt) <= new Date() &&
+    transaction.status === "pending"
+  ) {
     transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
 
     if (transaction.method === "crypto") {
@@ -254,11 +258,7 @@ async function creditWalletAfterChargeApproval(transactionId: string, req: Reque
     };
   }
 
-  if (transaction.status === "approved") {
-    return { ok: true, code: 200, msg: "Transação já estava aprovada.", transaction };
-  }
-
-  if (transaction.status !== "pending") {
+  if (!["pending", "approved"].includes(transaction.status)) {
     return {
       ok: false,
       code: 400,
@@ -277,6 +277,38 @@ async function creditWalletAfterChargeApproval(transactionId: string, req: Reque
   );
 
   if (existingLog) {
+    if (transaction.status !== "approved") {
+      transaction.status = "approved";
+
+      if (transaction.method === "pix") {
+        transaction.pix = {
+          ...(transaction.pix || {}),
+          paidAt: transaction.pix?.paidAt || new Date(),
+          endToEndId: transaction.pix?.endToEndId || generateEndToEndId(),
+        };
+      }
+
+      if (transaction.method === "crypto") {
+        transaction.crypto = {
+          ...(transaction.crypto || {}),
+          paymentStatus: transaction.crypto?.paymentStatus || "finished",
+          paidAt: transaction.crypto?.paidAt || new Date(),
+        };
+      }
+
+      await transaction.save();
+    }
+
+    return {
+      ok: true,
+      code: 200,
+      msg: "Transação já havia sido processada anteriormente.",
+      transaction,
+      wallet,
+    };
+  }
+
+  if (transaction.status !== "approved") {
     transaction.status = "approved";
 
     if (transaction.method === "pix") {
@@ -296,35 +328,7 @@ async function creditWalletAfterChargeApproval(transactionId: string, req: Reque
     }
 
     await transaction.save();
-
-    return {
-      ok: true,
-      code: 200,
-      msg: "Transação já havia sido processada anteriormente.",
-      transaction,
-      wallet,
-    };
   }
-
-  transaction.status = "approved";
-
-  if (transaction.method === "pix") {
-    transaction.pix = {
-      ...(transaction.pix || {}),
-      paidAt: new Date(),
-      endToEndId: transaction.pix?.endToEndId || generateEndToEndId(),
-    };
-  }
-
-  if (transaction.method === "crypto") {
-    transaction.crypto = {
-      ...(transaction.crypto || {}),
-      paymentStatus: transaction.crypto?.paymentStatus || "finished",
-      paidAt: new Date(),
-    };
-  }
-
-  await transaction.save();
 
   wallet.balance.available = round((wallet.balance.available || 0) + transaction.netAmount);
 
@@ -930,7 +934,6 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
         null;
 
       transaction.externalId = paymentId;
-      transaction.status = mappedStatus;
       transaction.expiresAt = expiresAt;
       transaction.crypto = {
         ...(transaction.crypto || {}),
@@ -939,12 +942,17 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
         payAddress: String(req.body.pay_address || transaction.crypto?.payAddress || ""),
         payAmount: Number(req.body.pay_amount || transaction.crypto?.payAmount || 0),
         payCurrency: String(req.body.pay_currency || transaction.crypto?.payCurrency || ""),
-        priceAmount: Number(req.body.price_amount || transaction.crypto?.priceAmount || transaction.amount || 0),
+        priceAmount: Number(
+          req.body.price_amount || transaction.crypto?.priceAmount || transaction.amount || 0
+        ),
         priceCurrency: String(req.body.price_currency || transaction.crypto?.priceCurrency || "brl"),
         network: String(req.body.network || transaction.crypto?.network || ""),
         orderId: String(req.body.order_id || transaction.crypto?.orderId || transaction._id.toString()),
         orderDescription: String(
-          req.body.order_description || transaction.crypto?.orderDescription || transaction.description || ""
+          req.body.order_description ||
+            transaction.crypto?.orderDescription ||
+            transaction.description ||
+            ""
         ),
         purchaseId: String(req.body.purchase_id || transaction.crypto?.purchaseId || ""),
         payinExtraId: String(req.body.payin_extra_id || transaction.crypto?.payinExtraId || ""),
@@ -958,9 +966,9 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
         txHash: String(req.body.payin_hash || req.body.tx_hash || transaction.crypto?.txHash || ""),
       };
 
-      await transaction.save();
-
       if (mappedStatus === "approved") {
+        await transaction.save();
+
         const result = await creditWalletAfterChargeApproval(transaction._id.toString(), req);
 
         res.status(result.code).json({
@@ -970,6 +978,9 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
         });
         return;
       }
+
+      transaction.status = mappedStatus;
+      await transaction.save();
 
       res.status(200).json({
         status: true,
