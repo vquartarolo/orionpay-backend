@@ -1,25 +1,21 @@
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 
-// Carrega variáveis de ambiente do arquivo .env
-dotenv.config();
+// NÃO precisa de dotenv no Railway (ele já usa process.env automático)
 
-// Pega a URI do MongoDB do .env ou usa fallback local apenas se necessário
 const MONGO_URI = process.env.MONGO_URI;
-
-if (!MONGO_URI) {
-  console.error("❌ ERRO: Variável MONGO_URI não encontrada no .env");
-  process.exit(1);
-}
 
 export const connectDB = async (): Promise<void> => {
   try {
-    console.log("🔌 Tentando conectar ao MongoDB...");
-    console.log("🔎 URI usada:", MONGO_URI);
+    if (!MONGO_URI) {
+      console.error("❌ MONGO_URI não definida");
+      process.exit(1);
+    }
+
+    console.log("🔌 Conectando ao MongoDB...");
 
     await mongoose.connect(MONGO_URI);
 
-    console.log("✅ Conectado ao MongoDB com sucesso!");
+    console.log("🔥 MongoDB conectado com sucesso!");
   } catch (error) {
     console.error("🚨 Erro ao conectar ao MongoDB:", error);
     process.exit(1);
