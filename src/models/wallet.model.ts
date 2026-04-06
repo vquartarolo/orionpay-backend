@@ -5,6 +5,7 @@ interface IUnavailableBalanceItem {
   availableIn?: Date | null;
   releaseDate?: Date | null;
   transactionId?: Types.ObjectId | null;
+  cashoutRequestId?: Types.ObjectId | null;
   description?: string;
 }
 
@@ -12,7 +13,7 @@ interface IWalletSecurity {
   createdAt?: Date;
   ipAddress?: string;
   userAgent?: string;
-  approvedBy?: mongoose.Types.ObjectId;
+  approvedBy?: mongoose.Types.ObjectId | null;
 }
 
 interface IWalletWithdrawal {
@@ -46,38 +47,37 @@ export interface IWallet extends Document {
   updatedAt: Date;
 }
 
-const unavailableBalanceItemSchema = new Schema<IUnavailableBalanceItem>(
-  {
-    amount: {
-      type: Number,
-      required: true,
-      default: 0,
-    },
-
-    availableIn: {
-      type: Date,
-      default: null,
-    },
-
-    releaseDate: {
-      type: Date,
-      default: null,
-    },
-
-    transactionId: {
-      type: Schema.Types.ObjectId,
-      ref: "Transaction",
-      default: null,
-    },
-
-    description: {
-      type: String,
-      default: "",
-      trim: true,
-    },
+const unavailableBalanceItemSchema = new Schema<IUnavailableBalanceItem>({
+  amount: {
+    type: Number,
+    required: true,
+    default: 0,
   },
-  { _id: false }
-);
+  availableIn: {
+    type: Date,
+    default: null,
+  },
+  releaseDate: {
+    type: Date,
+    default: null,
+  },
+  transactionId: {
+    type: Schema.Types.ObjectId,
+    ref: "Transaction",
+    default: null,
+  },
+  cashoutRequestId: {
+    type: Schema.Types.ObjectId,
+    ref: "CashoutRequest",
+    default: null,
+    index: true,
+  },
+  description: {
+    type: String,
+    default: "",
+    trim: true,
+  },
+});
 
 const walletLogItemSchema = new Schema<IWalletLogItem>(
   {
@@ -86,58 +86,51 @@ const walletLogItemSchema = new Schema<IWalletLogItem>(
       required: true,
       trim: true,
     },
-
     method: {
       type: String,
       default: "",
       trim: true,
     },
-
     amount: {
       type: Number,
       required: true,
       default: 0,
     },
-
     status: {
       type: String,
       default: "pending",
       trim: true,
     },
-
     description: {
       type: String,
       default: "",
       trim: true,
     },
-
     createdAt: {
       type: Date,
       default: Date.now,
     },
-
     security: {
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-  ipAddress: {
-    type: String,
-    default: "",
-    trim: true,
-  },
-  userAgent: {
-    type: String,
-    default: "",
-    trim: true,
-  },
-  approvedBy: {
-    type: Schema.Types.ObjectId,
-    ref: "User",
-    default: null,
-  },
-},
-
+      createdAt: {
+        type: Date,
+        default: Date.now,
+      },
+      ipAddress: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      userAgent: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      approvedBy: {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+    },
     withdrawal: {
       type: {
         type: String,
@@ -150,7 +143,6 @@ const walletLogItemSchema = new Schema<IWalletLogItem>(
         trim: true,
       },
     },
-
     transactionId: {
       type: Schema.Types.ObjectId,
       ref: "Transaction",
@@ -169,25 +161,21 @@ const walletSchema = new Schema<IWallet>(
       unique: true,
       index: true,
     },
-
     defaultAddress: {
       type: String,
       default: "",
       trim: true,
     },
-
     balance: {
       available: {
         type: Number,
         default: 0,
       },
-
       unAvailable: {
         type: [unavailableBalanceItemSchema],
         default: [],
       },
     },
-
     log: {
       type: [walletLogItemSchema],
       default: [],
