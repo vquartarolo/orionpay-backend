@@ -1,63 +1,79 @@
-import { RequestHandler } from "express";
-import { TransactionService } from "../services/transaction.service";
-import { PixService } from "../services/pix.service";
+import { Request, Response } from "express";
+import { Transaction } from "../models/transaction.model";
+import { ZendryService } from "../services/zendry.service";
 
-export const createPayment: RequestHandler = async (req, res) => {
+export const createPayment = async (req: Request, res: Response) => {
   try {
     const { userId, amount, method } = req.body;
 
     if (!userId || !amount || !method) {
-      res.status(400).json({
+      return res.status(400).json({
         status: false,
-        msg: "userId, amount e method são obrigatórios",
+        msg: "Dados inválidos",
       });
-      return;
     }
 
-    if (!["pix", "crypto"].includes(method)) {
-      res.status(400).json({
-        status: false,
-        msg: "Método inválido",
-      });
-      return;
-    }
-
-    const provider = method === "pix" ? "cartwave" : "nowpayments";
-
-    const transaction = await TransactionService.createTransaction({
+    // 🧠 cria transação
+    const transaction = await Transaction.create({
       userId,
       amount,
+      status: "pending",
       method,
-      provider,
     });
 
-    // 🔥 PIX FLOW
+    // 🔥 PIX → ZENDRY
     if (method === "pix") {
-      const pixData = await PixService.createPix(
-        transaction._id.toString(),
-        amount
+      const zendryResponse: any = await ZendryService.createPix(
+        amount,
+        transaction._id.toString()
       );
 
-      res.status(201).json({
+      const qrCode =
+        zendryResponse?.qr_code ||
+        zendryResponse?.qrCode ||
+        zendryResponse?.payload ||
+        "";
+
+      const payload =
+        zendryResponse?.payload ||
+        zendryResponse?.copy_paste ||
+        zendryResponse?.qr_code ||
+        "";
+
+      const providerId =
+        zendryResponse?.id ||
+        zendryResponse?.transaction_id ||
+        transaction._id;
+
+      await Transaction.findByIdAndUpdate(transaction._id, {
+        provider: "zendry",
+        providerId,
+        providerStatus: "pending",
+        pix: {
+          qrCodeText: payload,
+          txid: providerId,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+
+      return res.json({
         status: true,
         msg: "PIX gerado com sucesso",
         transactionId: transaction._id,
-        qrCode: pixData.qrCode,
-        payload: pixData.payload,
+        qrCode,
+        payload,
+        raw: zendryResponse,
       });
-
-      return;
     }
 
-    // 🔥 CRIPTO (por enquanto só cria transaction)
-    res.status(201).json({
-      status: true,
-      msg: "Transação criada (crypto ainda não integrado)",
-      transaction,
+    return res.status(400).json({
+      status: false,
+      msg: "Método não suportado",
     });
   } catch (error) {
     console.error("❌ Erro createPayment:", error);
-    res.status(500).json({
+
+    return res.status(500).json({
       status: false,
       msg: "Erro interno",
     });
