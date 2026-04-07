@@ -14,6 +14,11 @@ export type TransactionMethod =
   | "boleto"
   | "crypto";
 
+export type TransactionProvider =
+  | "cartwave"
+  | "zendry"
+  | "nowpayments";
+
 export interface ITransaction extends Document {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
@@ -28,6 +33,12 @@ export interface ITransaction extends Document {
 
   method: TransactionMethod;
   status: TransactionStatus;
+
+  // 🔥 NOVO (CORE DO GATEWAY)
+  externalReference: string;
+  provider: TransactionProvider;
+  providerId?: string;
+  providerStatus?: string;
 
   description?: string;
   externalId?: string;
@@ -154,6 +165,32 @@ const transactionSchema = new Schema<ITransaction>(
       enum: ["pending", "approved", "failed", "expired", "cancelled"],
       default: "pending",
       index: true,
+    },
+
+    // 🔥 NOVO (ESSENCIAL)
+    externalReference: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+
+    provider: {
+      type: String,
+      enum: ["cartwave", "zendry", "nowpayments"],
+      required: true,
+      index: true,
+    },
+
+    providerId: {
+      type: String,
+      default: "",
+      index: true,
+    },
+
+    providerStatus: {
+      type: String,
+      default: "",
     },
 
     description: { type: String, default: "" },

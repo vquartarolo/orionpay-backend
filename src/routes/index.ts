@@ -9,6 +9,7 @@ import cryptoRoutes from "./crypto.routes";
 import twofaRoutes from "./twofa.routes";
 import kycRoutes from "./kyc.routes";
 import sessionRoutes from "./session.routes";
+import paymentRoutes from "./payment.routes";
 
 const router = Router();
 
@@ -21,5 +22,7 @@ router.use("/crypto", cryptoRoutes);
 router.use("/2fa", twofaRoutes);
 router.use("/kyc", kycRoutes);
 router.use("/sessions", sessionRoutes);
+
+
 
 export default router;
