@@ -22,7 +22,6 @@ router.use("/crypto", cryptoRoutes);
 router.use("/2fa", twofaRoutes);
 router.use("/kyc", kycRoutes);
 router.use("/sessions", sessionRoutes);
-
-
+router.use("/payment", paymentRoutes);
 
 export default router;
