@@ -12,7 +12,7 @@ import {
 } from "../config/auth";
 import { createSession } from "../services/session.service";
 
-type PaymentMethod = "pix" | "creditCard" | "boleto";
+type PaymentMethod = "pix" | "creditCard" | "boleto" | "crypto";
 
 function validateStrongPassword(password: string) {
   const value = String(password || "");
@@ -964,7 +964,7 @@ export const updateSplitFees = async (
       percentage: number;
     };
 
-    const validMethods: PaymentMethod[] = ["pix", "creditCard", "boleto"];
+    const validMethods: PaymentMethod[] = ["pix", "creditCard", "boleto", "crypto"];
     if (!validMethods.includes(method)) {
       res.status(400).json({
         status: false,

@@ -23,13 +23,18 @@ function toSafeLimit(value: unknown, fallback = 20, max = 100) {
 
 function inferOnlineStatus(lastActivityAt?: Date | string | null) {
   if (!lastActivityAt) return "offline";
+
   const ts = new Date(lastActivityAt).getTime();
   if (Number.isNaN(ts)) return "offline";
+
   const diffMs = Date.now() - ts;
   return diffMs <= 1000 * 60 * 10 ? "online" : "offline";
 }
 
-export async function listAdminAccounts(req: Request, res: Response): Promise<void> {
+export async function listAdminAccounts(
+  req: Request,
+  res: Response
+): Promise<void> {
   try {
     const search = sanitizeSearch(req.query.search);
     const status = sanitizeSearch(req.query.status);
@@ -55,7 +60,9 @@ export async function listAdminAccounts(req: Request, res: Response): Promise<vo
 
     const [users, total] = await Promise.all([
       User.find(query)
-        .select("_id name email phone document role status accountStatus emailVerified twofaEnabled pixKey split createdAt updatedAt")
+        .select(
+          "_id name email phone document role status accountStatus emailVerified twofaEnabled pixKey split token createdAt updatedAt"
+        )
         .sort({ updatedAt: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -85,13 +92,17 @@ export async function listAdminAccounts(req: Request, res: Response): Promise<vo
     const providerMap = new Map<string, string>();
     transactions.forEach((tx) => {
       const key = String(tx.userId);
-      if (!providerMap.has(key)) providerMap.set(key, String(tx.provider || ""));
+      if (!providerMap.has(key)) {
+        providerMap.set(key, String(tx.provider || ""));
+      }
     });
 
     const kycMap = new Map<string, any>();
     kycs.forEach((kyc) => {
       const key = String(kyc.userId);
-      if (!kycMap.has(key)) kycMap.set(key, kyc);
+      if (!kycMap.has(key)) {
+        kycMap.set(key, kyc);
+      }
     });
 
     const items = users.map((user) => {
@@ -119,6 +130,7 @@ export async function listAdminAccounts(req: Request, res: Response): Promise<vo
         onlineStatus: inferOnlineStatus(wallet?.updatedAt || user.updatedAt),
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
+        token: user.token || null,
       };
     });
 
@@ -141,7 +153,10 @@ export async function listAdminAccounts(req: Request, res: Response): Promise<vo
   }
 }
 
-export async function getAdminAccountDetails(req: Request, res: Response): Promise<void> {
+export async function getAdminAccountDetails(
+  req: Request,
+  res: Response
+): Promise<void> {
   try {
     const { id } = req.params;
 
@@ -151,7 +166,9 @@ export async function getAdminAccountDetails(req: Request, res: Response): Promi
     }
 
     const user = await User.findById(id)
-      .select("_id name email phone document role status accountStatus emailVerified twofaEnabled pixKey split token createdAt updatedAt")
+      .select(
+        "_id name email phone document role status accountStatus emailVerified twofaEnabled pixKey split token createdAt updatedAt"
+      )
       .lean();
 
     if (!user) {
@@ -169,7 +186,9 @@ export async function getAdminAccountDetails(req: Request, res: Response): Promi
       Transaction.find({ userId: user._id })
         .sort({ createdAt: -1 })
         .limit(10)
-        .select("_id amount fee netAmount method status provider description createdAt externalReference providerStatus")
+        .select(
+          "_id amount fee netAmount method status provider description createdAt externalReference providerStatus"
+        )
         .lean(),
     ]);
 
@@ -206,7 +225,10 @@ export async function getAdminAccountDetails(req: Request, res: Response): Promi
   }
 }
 
-export async function updateAdminAccountStatus(req: Request, res: Response): Promise<void> {
+export async function updateAdminAccountStatus(
+  req: Request,
+  res: Response
+): Promise<void> {
   try {
     const { id } = req.params;
     const { status } = req.body || {};
@@ -257,7 +279,10 @@ export async function updateAdminAccountStatus(req: Request, res: Response): Pro
   }
 }
 
-export async function getAdminAccountTransactions(req: Request, res: Response): Promise<void> {
+export async function getAdminAccountTransactions(
+  req: Request,
+  res: Response
+): Promise<void> {
   try {
     const { id } = req.params;
     const page = toSafePage(req.query.page, 1);
@@ -275,7 +300,9 @@ export async function getAdminAccountTransactions(req: Request, res: Response): 
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("_id amount fee netAmount method status provider description createdAt externalReference providerStatus")
+        .select(
+          "_id amount fee netAmount method status provider description createdAt externalReference providerStatus"
+        )
         .lean(),
       Transaction.countDocuments({ userId: id }),
     ]);
@@ -299,7 +326,10 @@ export async function getAdminAccountTransactions(req: Request, res: Response): 
   }
 }
 
-export async function getAdminAccountKyc(req: Request, res: Response): Promise<void> {
+export async function getAdminAccountKyc(
+  req: Request,
+  res: Response
+): Promise<void> {
   try {
     const { id } = req.params;
 
