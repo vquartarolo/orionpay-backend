@@ -1,12 +1,15 @@
 import { Router } from "express";
-import { requireAuth, requireBackofficeAccess } from "../middleware/auth.middleware";
+import { requireAuth, requireBackofficeAccess, requireRole } from "../middleware/auth.middleware";
+import {
+  listAdminAccounts,
+  getAdminAccountDetails,
+  updateAdminAccountStatus,
+  getAdminAccountTransactions,
+  getAdminAccountKyc,
+} from "../controllers/admin.controller";
 
 const router = Router();
 
-/**
- * 🧠 ROTA BASE DO ADMIN
- * Serve para validar acesso ao painel administrativo
- */
 router.get(
   "/me",
   requireAuth,
@@ -19,5 +22,11 @@ router.get(
     });
   }
 );
+
+router.get("/accounts", requireAuth, requireBackofficeAccess, listAdminAccounts);
+router.get("/accounts/:id", requireAuth, requireBackofficeAccess, getAdminAccountDetails);
+router.patch("/accounts/:id/status", requireAuth, requireRole(["admin", "master"]), updateAdminAccountStatus);
+router.get("/accounts/:id/transactions", requireAuth, requireBackofficeAccess, getAdminAccountTransactions);
+router.get("/accounts/:id/kyc", requireAuth, requireBackofficeAccess, getAdminAccountKyc);
 
 export default router;

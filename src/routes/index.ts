@@ -10,10 +10,12 @@ import twofaRoutes from "./twofa.routes";
 import kycRoutes from "./kyc.routes";
 import sessionRoutes from "./session.routes";
 import paymentRoutes from "./payment.routes";
+import adminRoutes from "./admin.routes";
 
 const router = Router();
 
 router.use("/auth", authRoutes);
+router.use("/admin", adminRoutes);
 router.use("/users", userRoutes);
 router.use("/transactions", transactionRoutes);
 router.use("/wallet", walletRoutes);
