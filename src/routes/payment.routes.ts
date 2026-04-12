@@ -1,10 +1,18 @@
-import { Router, Request, Response } from "express";
-import { createPayment } from "../controllers/payment.controller";
+import { Router } from "express";
 
 const router = Router();
 
-router.post("/create", async (req: Request, res: Response) => {
-  await createPayment(req, res);
-});
+/*
+  FASE 1 — rota antiga de pagamento aposentada.
+
+  Fluxos oficiais de cobrança:
+  POST /api/transactions/create
+  POST /api/transactions/create/pix
+  POST /api/transactions/create/crypto
+
+  Este arquivo permanece isolado temporariamente
+  para evitar duplicidade e conflito com o núcleo
+  unificado de transactions.
+*/
 
 export default router;

@@ -15,6 +15,7 @@ export type TransactionMethod =
   | "crypto";
 
 export type TransactionProvider =
+  | "internal"
   | "cartwave"
   | "zendry"
   | "nowpayments";
@@ -22,7 +23,7 @@ export type TransactionProvider =
 export interface ITransaction extends Document {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
-  productId?: Types.ObjectId;
+  productId?: Types.ObjectId | null;
 
   type?: string;
 
@@ -34,7 +35,6 @@ export interface ITransaction extends Document {
   method: TransactionMethod;
   status: TransactionStatus;
 
-  // 🔥 NOVO (CORE DO GATEWAY)
   externalReference: string;
   provider: TransactionProvider;
   providerId?: string;
@@ -44,6 +44,9 @@ export interface ITransaction extends Document {
   externalId?: string;
   postback?: string;
   expiresAt?: Date | null;
+  approvedAt?: Date | null;
+  failedAt?: Date | null;
+  cancelledAt?: Date | null;
 
   createdAt: Date;
   updatedAt: Date;
@@ -58,7 +61,7 @@ export interface ITransaction extends Document {
       ip?: string;
     };
     products?: {
-      productId?: Types.ObjectId;
+      productId?: Types.ObjectId | null;
       name?: string;
       price?: number;
     }[];
@@ -100,6 +103,14 @@ export interface ITransaction extends Document {
     expiresAt?: Date | null;
     paidAt?: Date | null;
     txHash?: string;
+  };
+
+  webhook?: {
+    lastSignature?: string;
+    lastPayloadHash?: string;
+    lastSource?: string;
+    lastReceivedAt?: Date | null;
+    processedCount?: number;
   };
 }
 
@@ -167,18 +178,19 @@ const transactionSchema = new Schema<ITransaction>(
       index: true,
     },
 
-    // 🔥 NOVO (ESSENCIAL)
     externalReference: {
       type: String,
       required: true,
       unique: true,
       index: true,
+      default: () => `TX-${Date.now()}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
     },
 
     provider: {
       type: String,
-      enum: ["cartwave", "zendry", "nowpayments"],
+      enum: ["internal", "cartwave", "zendry", "nowpayments"],
       required: true,
+      default: "internal",
       index: true,
     },
 
@@ -191,6 +203,7 @@ const transactionSchema = new Schema<ITransaction>(
     providerStatus: {
       type: String,
       default: "",
+      index: true,
     },
 
     description: { type: String, default: "" },
@@ -201,6 +214,22 @@ const transactionSchema = new Schema<ITransaction>(
       type: Date,
       default: null,
       index: true,
+    },
+
+    approvedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    failedAt: {
+      type: Date,
+      default: null,
+    },
+
+    cancelledAt: {
+      type: Date,
+      default: null,
     },
 
     purchaseData: {
@@ -285,8 +314,7 @@ const transactionSchema = new Schema<ITransaction>(
       },
       priceCurrency: {
         type: String,
-        default: "",
-      },
+        default: "" },
       network: {
         type: String,
         default: "",
@@ -294,6 +322,7 @@ const transactionSchema = new Schema<ITransaction>(
       orderId: {
         type: String,
         default: "",
+        index: true,
       },
       orderDescription: {
         type: String,
@@ -336,6 +365,29 @@ const transactionSchema = new Schema<ITransaction>(
         default: "",
       },
     },
+
+    webhook: {
+      lastSignature: {
+        type: String,
+        default: "",
+      },
+      lastPayloadHash: {
+        type: String,
+        default: "",
+      },
+      lastSource: {
+        type: String,
+        default: "",
+      },
+      lastReceivedAt: {
+        type: Date,
+        default: null,
+      },
+      processedCount: {
+        type: Number,
+        default: 0,
+      },
+    },
   },
   { timestamps: true }
 );
@@ -345,6 +397,11 @@ transactionSchema.index({ productId: 1 });
 transactionSchema.index({ createdAt: -1 });
 transactionSchema.index({ method: 1, status: 1 });
 transactionSchema.index({ status: 1, expiresAt: 1 });
+transactionSchema.index({ provider: 1, providerStatus: 1 });
+transactionSchema.index({ providerId: 1, provider: 1 });
+transactionSchema.index({ externalId: 1, provider: 1 });
+transactionSchema.index({ "pix.txid": 1 });
 transactionSchema.index({ "crypto.paymentId": 1 });
+transactionSchema.index({ "crypto.orderId": 1 });
 
 export const Transaction = mongoose.model<ITransaction>("Transaction", transactionSchema);

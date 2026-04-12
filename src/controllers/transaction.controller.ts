@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import express, { Request, Response } from "express";
 import axios from "axios";
 import crypto from "crypto";
 import { decodeToken } from "../config/auth";
@@ -8,6 +8,10 @@ import { Transaction, TransactionStatus } from "../models/transaction.model";
 import { Product } from "../models/product.model";
 import { RetentionPolicy } from "../models/retentionPolicy.model";
 import { calculatePixTax, round } from "../utils/fees";
+
+type WebhookRequest = Request & {
+  rawBody?: string;
+};
 
 /* -------------------------------------------------------
 🛠 Helpers
@@ -30,6 +34,11 @@ async function getAuthenticatedUser(req: Request) {
 
 function generateTxid(): string {
   return crypto.randomBytes(12).toString("hex").toUpperCase();
+}
+
+function generateExternalReference(prefix: string): string {
+  const random = crypto.randomBytes(6).toString("hex").toUpperCase();
+  return `${prefix}-${Date.now()}-${random}`;
 }
 
 function generateEndToEndId(): string {
@@ -165,6 +174,51 @@ function getNowPaymentsErrorMessage(error: unknown): string {
   );
 }
 
+function getHeaderValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return String(value[0] || "");
+  return String(value || "");
+}
+
+function stableSortObject(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stableSortObject);
+  }
+
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
+
+    return entries.reduce<Record<string, unknown>>((acc, [key, val]) => {
+      acc[key] = stableSortObject(val);
+      return acc;
+    }, {});
+  }
+
+  return value;
+}
+
+function buildNowPaymentsSignaturePayload(body: Record<string, unknown>): string {
+  return JSON.stringify(stableSortObject(body));
+}
+
+function verifyNowPaymentsSignature(req: WebhookRequest): boolean {
+  const ipnSecret = String(process.env.NOWPAYMENTS_IPN_SECRET || "").trim();
+  const receivedSignature = getHeaderValue(req.headers["x-nowpayments-sig"]).trim();
+
+  if (!ipnSecret || !receivedSignature || !req.body || typeof req.body !== "object") {
+    return false;
+  }
+
+  const payload = buildNowPaymentsSignaturePayload(req.body as Record<string, unknown>);
+  const expectedSignature = crypto.createHmac("sha512", ipnSecret).update(payload).digest("hex");
+
+  return crypto.timingSafeEqual(
+    Buffer.from(expectedSignature.toLowerCase(), "utf8"),
+    Buffer.from(receivedSignature.toLowerCase(), "utf8")
+  );
+}
+
 async function cancelExpiredPendingTransactions(userId?: string) {
   const now = new Date();
 
@@ -208,6 +262,7 @@ async function cancelExpiredPendingTransactions(userId?: string) {
 
     if (isExpired) {
       tx.status = tx.method === "crypto" ? "expired" : "cancelled";
+      tx.providerStatus = tx.method === "crypto" ? "expired" : "cancelled";
 
       if (tx.method === "crypto") {
         tx.crypto = {
@@ -224,114 +279,102 @@ async function cancelExpiredPendingTransactions(userId?: string) {
 
 async function creditWalletAfterChargeApproval(transactionId: string, req: Request) {
   const transaction = await Transaction.findById(transactionId);
+
   if (!transaction) {
     return { ok: false, code: 404, msg: "Transação não encontrada." };
   }
 
   if (!["pix", "crypto"].includes(transaction.method)) {
-    return { ok: false, code: 400, msg: "A transação informada não é PIX nem cripto." };
+    return { ok: false, code: 400, msg: "Método inválido." };
   }
 
+  // 🔐 BLOQUEIO FORTE — já aprovado = não processa de novo
+  if (transaction.status === "approved") {
+    return {
+      ok: true,
+      code: 200,
+      msg: "Transação já estava aprovada (idempotência aplicada).",
+      transaction,
+    };
+  }
+
+  // ⛔ NÃO APROVA SE NÃO ESTIVER PENDENTE
+  if (transaction.status !== "pending") {
+    return {
+      ok: false,
+      code: 400,
+      msg: `Transação não pode ser aprovada (status: ${transaction.status})`,
+    };
+  }
+
+  // ⏱ EXPIRAÇÃO
   if (
     transaction.expiresAt &&
-    new Date(transaction.expiresAt) <= new Date() &&
-    transaction.status === "pending"
+    new Date(transaction.expiresAt) <= new Date()
   ) {
     transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
-
-    if (transaction.method === "crypto") {
-      transaction.crypto = {
-        ...(transaction.crypto || {}),
-        paymentStatus: transaction.crypto?.paymentStatus || "expired",
-      };
-    }
-
     await transaction.save();
 
     return {
       ok: false,
       code: 400,
-      msg:
-        transaction.method === "pix"
-          ? "Esta cobrança PIX expirou e foi cancelada."
-          : "Esta cobrança cripto expirou.",
-    };
-  }
-
-  if (!["pending", "approved"].includes(transaction.status)) {
-    return {
-      ok: false,
-      code: 400,
-      msg: `Não é possível aprovar transação com status ${transaction.status}.`,
+      msg: "Transação expirada.",
     };
   }
 
   const wallet = await Wallet.findOne({ userId: transaction.userId });
+
   if (!wallet) {
-    return { ok: false, code: 404, msg: "Carteira do usuário não encontrada." };
+    return { ok: false, code: 404, msg: "Carteira não encontrada." };
   }
 
-  const existingLog = wallet.log.find(
-    (item: { transactionId?: { toString(): string } | null }) =>
-      item.transactionId?.toString() === transaction._id.toString()
+  // 🔍 VERIFICA SE JÁ EXISTE LOG (SEGUNDA CAMADA DE PROTEÇÃO)
+  const alreadyLogged = wallet.log.some(
+    (log: any) =>
+      log.transactionId?.toString() === transaction._id.toString()
   );
 
-  if (existingLog) {
-    if (transaction.status !== "approved") {
-      transaction.status = "approved";
-
-      if (transaction.method === "pix") {
-        transaction.pix = {
-          ...(transaction.pix || {}),
-          paidAt: transaction.pix?.paidAt || new Date(),
-          endToEndId: transaction.pix?.endToEndId || generateEndToEndId(),
-        };
-      }
-
-      if (transaction.method === "crypto") {
-        transaction.crypto = {
-          ...(transaction.crypto || {}),
-          paymentStatus: transaction.crypto?.paymentStatus || "finished",
-          paidAt: transaction.crypto?.paidAt || new Date(),
-        };
-      }
-
-      await transaction.save();
-    }
+  if (alreadyLogged) {
+    transaction.status = "approved";
+    await transaction.save();
 
     return {
       ok: true,
       code: 200,
-      msg: "Transação já havia sido processada anteriormente.",
+      msg: "Transação já processada anteriormente.",
       transaction,
-      wallet,
     };
   }
 
-  if (transaction.status !== "approved") {
-    transaction.status = "approved";
+  // ✅ APROVAÇÃO REAL
+  transaction.status = "approved";
 
-    if (transaction.method === "pix") {
-      transaction.pix = {
-        ...(transaction.pix || {}),
-        paidAt: transaction.pix?.paidAt || new Date(),
-        endToEndId: transaction.pix?.endToEndId || generateEndToEndId(),
-      };
-    }
+  // 🕒 AUDITORIA
+  transaction.approvedAt = new Date();
 
-    if (transaction.method === "crypto") {
-      transaction.crypto = {
-        ...(transaction.crypto || {}),
-        paymentStatus: transaction.crypto?.paymentStatus || "finished",
-        paidAt: transaction.crypto?.paidAt || new Date(),
-      };
-    }
-
-    await transaction.save();
+  if (transaction.method === "pix") {
+    transaction.pix = {
+      ...(transaction.pix || {}),
+      paidAt: new Date(),
+      endToEndId:
+        transaction.pix?.endToEndId || `E2E${Date.now()}`,
+    };
   }
 
-  wallet.balance.available = round((wallet.balance.available || 0) + transaction.netAmount);
+  if (transaction.method === "crypto") {
+    transaction.crypto = {
+      ...(transaction.crypto || {}),
+      paymentStatus: "finished",
+      paidAt: new Date(),
+    };
+  }
 
+  await transaction.save();
+
+  // 💰 CREDITA SALDO
+  wallet.balance.available += transaction.netAmount;
+
+  // 🧾 LOG
   wallet.log.push({
     transactionId: transaction._id,
     type: "topup",
@@ -340,11 +383,13 @@ async function creditWalletAfterChargeApproval(transactionId: string, req: Reque
     status: "approved",
     description:
       transaction.description ||
-      (transaction.method === "pix" ? "Pagamento PIX aprovado" : "Pagamento cripto aprovado"),
+      (transaction.method === "pix"
+        ? "PIX aprovado"
+        : "Cripto aprovado"),
     createdAt: new Date(),
     security: {
       createdAt: new Date(),
-      ipAddress: req.ip || "localhost",
+      ipAddress: req.ip || "unknown",
       userAgent: String(req.headers["user-agent"] || "unknown"),
     },
   });
@@ -354,10 +399,7 @@ async function creditWalletAfterChargeApproval(transactionId: string, req: Reque
   return {
     ok: true,
     code: 200,
-    msg:
-      transaction.method === "pix"
-        ? "Pagamento PIX aprovado e saldo creditado com sucesso."
-        : "Pagamento cripto aprovado e saldo creditado com sucesso.",
+    msg: "Saldo creditado com sucesso.",
     transaction,
     wallet,
   };
@@ -429,6 +471,10 @@ export const createTransaction = async (req: Request, res: Response): Promise<vo
       type: "deposit",
       method: safeMethod,
       status: "pending",
+      externalReference: generateExternalReference("SALE"),
+      provider: "internal",
+      providerId: "",
+      providerStatus: "pending",
       description: description || `Venda do produto: ${product.name}`,
       createdAt: new Date(),
       purchaseData: {
@@ -534,6 +580,7 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
     const netAmount = round(amount - fee);
 
     const txid = generateTxid();
+    const externalReference = `PIX-${txid}`;
     const expiresAt = new Date(Date.now() + safeExpiresInMinutes * 60 * 1000);
 
     const customerDocumentRaw =
@@ -558,6 +605,10 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       retention: 0,
       method: "pix",
       status: "pending",
+      externalReference,
+      provider: "internal",
+      providerId: txid,
+      providerStatus: "pending",
       description,
       postback: req.body.postback || "",
       expiresAt,
@@ -589,6 +640,10 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       transaction: {
         id: transaction._id,
         status: transaction.status,
+        provider: transaction.provider,
+        providerId: transaction.providerId,
+        providerStatus: transaction.providerStatus,
+        externalReference: transaction.externalReference,
         method: transaction.method,
         amount: transaction.amount,
         fee: transaction.fee,
@@ -669,6 +724,10 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
       retention: 0,
       method: "crypto",
       status: "pending",
+      externalReference: generateExternalReference("NP"),
+      provider: "nowpayments",
+      providerId: "",
+      providerStatus: "waiting",
       description,
       postback: req.body.postback || "",
       purchaseData: {
@@ -696,16 +755,16 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
     const webhookUrl = buildNowPaymentsWebhookUrl(req);
 
     const payload: Record<string, unknown> = {
-  price_amount: amount,
-  price_currency: "brl",
-  pay_currency: payCurrency,
-  order_id: transaction._id.toString(),
-  order_description: description,
-};
+      price_amount: amount,
+      price_currency: "brl",
+      pay_currency: payCurrency,
+      order_id: transaction.externalReference,
+      order_description: description,
+    };
 
-if (webhookUrl) {
-  payload.ipn_callback_url = webhookUrl;
-}
+    if (webhookUrl) {
+      payload.ipn_callback_url = webhookUrl;
+    }
 
     const { data } = await axios.post<Record<string, unknown>>(
       "https://api.nowpayments.io/v1/payment",
@@ -732,6 +791,8 @@ if (webhookUrl) {
       new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     transaction.externalId = paymentId;
+    transaction.providerId = paymentId;
+    transaction.providerStatus = paymentStatus;
     transaction.expiresAt = expiresAt;
     transaction.crypto = {
       ...(transaction.crypto || {}),
@@ -743,7 +804,7 @@ if (webhookUrl) {
       priceAmount,
       priceCurrency,
       network,
-      orderId: String(data.order_id || transaction._id.toString()),
+      orderId: String(data.order_id || transaction.externalReference),
       orderDescription: String(data.order_description || description),
       purchaseId: String(data.purchase_id || ""),
       payinExtraId: String(data.payin_extra_id || ""),
@@ -764,6 +825,10 @@ if (webhookUrl) {
       transaction: {
         id: transaction._id,
         status: transaction.status,
+        provider: transaction.provider,
+        providerId: transaction.providerId,
+        providerStatus: transaction.providerStatus,
+        externalReference: transaction.externalReference,
         method: transaction.method,
         amount: transaction.amount,
         fee: transaction.fee,
@@ -791,7 +856,10 @@ if (webhookUrl) {
     }
 
     const maybeAxiosError = error as { response?: { data?: unknown }; message?: string };
-    console.error("❌ Erro em createCryptoTransaction:", maybeAxiosError?.response?.data || maybeAxiosError?.message || error);
+    console.error(
+      "❌ Erro em createCryptoTransaction:",
+      maybeAxiosError?.response?.data || maybeAxiosError?.message || error
+    );
     res.status(500).json({
       status: false,
       msg: getNowPaymentsErrorMessage(error),
@@ -855,6 +923,13 @@ export const simulatePixPayment = async (req: Request, res: Response): Promise<v
 -------------------------------------------------------- */
 export const consultTransactionByID = async (req: Request, res: Response): Promise<void> => {
   try {
+    const user = await getAuthenticatedUser(req);
+
+    if (!user) {
+      res.status(401).json({ status: false, msg: "Token inválido." });
+      return;
+    }
+
     const { id } = req.query;
 
     if (!id || typeof id !== "string") {
@@ -868,12 +943,18 @@ export const consultTransactionByID = async (req: Request, res: Response): Promi
       return;
     }
 
+    if (transaction.userId.toString() !== String(user._id)) {
+      res.status(403).json({ status: false, msg: "Você não pode consultar esta transação." });
+      return;
+    }
+
     if (
       transaction.expiresAt &&
       transaction.status === "pending" &&
       new Date(transaction.expiresAt) <= new Date()
     ) {
       transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
+      transaction.providerStatus = transaction.method === "crypto" ? "expired" : "cancelled";
 
       if (transaction.method === "crypto") {
         transaction.crypto = {
@@ -888,6 +969,10 @@ export const consultTransactionByID = async (req: Request, res: Response): Promi
     res.status(200).json({
       id: transaction._id?.toString(),
       status: transaction.status,
+      provider: transaction.provider,
+      providerId: transaction.providerId || "",
+      providerStatus: transaction.providerStatus || "",
+      externalReference: transaction.externalReference || "",
       method: transaction.method,
       value: transaction.amount,
       expiresAt: transaction.expiresAt || null,
@@ -904,13 +989,32 @@ export const consultTransactionByID = async (req: Request, res: Response): Promi
 /* -------------------------------------------------------
 🔁 6. Webhook
 -------------------------------------------------------- */
-export const webhookTransaction = async (req: Request, res: Response): Promise<void> => {
+export const webhookTransaction = async (req: WebhookRequest, res: Response): Promise<void> => {
   try {
     const isNowPaymentsWebhook = Boolean(req.body?.payment_id || req.body?.payment_status);
 
     if (isNowPaymentsWebhook) {
+      const ipnSecret = String(process.env.NOWPAYMENTS_IPN_SECRET || "").trim();
+
+      if (!ipnSecret) {
+        res.status(500).json({
+          status: false,
+          msg: "NOWPAYMENTS_IPN_SECRET não configurada.",
+        });
+        return;
+      }
+
+      const isValidSignature = verifyNowPaymentsSignature(req);
+
+      if (!isValidSignature) {
+        console.warn("❌ Assinatura NOWPayments inválida.");
+        res.status(401).json({ status: false, msg: "Assinatura do webhook inválida." });
+        return;
+      }
+
       const paymentId = String(req.body.payment_id || "").trim();
       const paymentStatus = String(req.body.payment_status || "").trim().toLowerCase();
+      const orderId = String(req.body.order_id || "").trim();
 
       if (!paymentId || !paymentStatus) {
         res.status(400).json({ status: false, msg: "payment_id e payment_status são obrigatórios." });
@@ -918,7 +1022,17 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
       }
 
       const transaction = await Transaction.findOne({
-        $or: [{ externalId: paymentId }, { "crypto.paymentId": paymentId }],
+        $or: [
+          { externalId: paymentId },
+          { providerId: paymentId },
+          { "crypto.paymentId": paymentId },
+          ...(orderId
+            ? [
+                { externalReference: orderId },
+                { "crypto.orderId": orderId },
+              ]
+            : []),
+        ],
       });
 
       if (!transaction) {
@@ -933,7 +1047,10 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
         transaction.expiresAt ||
         null;
 
+      transaction.provider = "nowpayments";
       transaction.externalId = paymentId;
+      transaction.providerId = paymentId;
+      transaction.providerStatus = paymentStatus;
       transaction.expiresAt = expiresAt;
       transaction.crypto = {
         ...(transaction.crypto || {}),
@@ -947,7 +1064,7 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
         ),
         priceCurrency: String(req.body.price_currency || transaction.crypto?.priceCurrency || "brl"),
         network: String(req.body.network || transaction.crypto?.network || ""),
-        orderId: String(req.body.order_id || transaction.crypto?.orderId || transaction._id.toString()),
+        orderId: String(req.body.order_id || transaction.crypto?.orderId || transaction.externalReference),
         orderDescription: String(
           req.body.order_description ||
             transaction.crypto?.orderDescription ||
@@ -982,6 +1099,10 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
       transaction.status = mappedStatus;
       await transaction.save();
 
+      console.log(
+        `ℹ️ Webhook NOWPayments processado: tx=${transaction._id} paymentId=${paymentId} status=${paymentStatus}`
+      );
+
       res.status(200).json({
         status: true,
         msg: "✅ Webhook NOWPayments processado com sucesso.",
@@ -997,7 +1118,15 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    const transaction = await Transaction.findById(externalCode);
+    const transaction = await Transaction.findOne({
+      $or: [
+        { _id: externalCode },
+        { externalReference: externalCode },
+        { providerId: externalCode },
+        { externalId: externalCode },
+      ],
+    });
+
     if (!transaction) {
       res.status(404).json({ status: false, msg: "Transação não encontrada." });
       return;
@@ -1009,6 +1138,7 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
       new Date(transaction.expiresAt) <= new Date()
     ) {
       transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
+      transaction.providerStatus = transaction.method === "crypto" ? "expired" : "cancelled";
       await transaction.save();
 
       res.status(400).json({
@@ -1023,7 +1153,11 @@ export const webhookTransaction = async (req: Request, res: Response): Promise<v
       ? (status as TransactionStatus)
       : "pending";
 
+    transaction.providerStatus = String(status);
+
     if (["pix", "crypto"].includes(transaction.method) && safeStatus === "approved") {
+      await transaction.save();
+
       const result = await creditWalletAfterChargeApproval(transaction._id.toString(), req);
 
       res.status(result.code).json({
@@ -1091,6 +1225,8 @@ export const getTransactionsHistory = async (req: Request, res: Response): Promi
       query.$or = [
         { description: regex },
         { externalId: regex },
+        { externalReference: regex },
+        { providerId: regex },
         { "pix.txid": regex },
         { "crypto.paymentId": regex },
         { "crypto.payAddress": regex },

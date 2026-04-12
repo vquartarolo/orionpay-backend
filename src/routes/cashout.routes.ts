@@ -2,9 +2,10 @@ import { Router } from "express";
 import {
   createCashoutRequest,
   listCashoutRequests,
-  updateCashoutStatus,
   releaseBalanceManually,
+  updateCashoutStatus,
 } from "../controllers/cashout.controller";
+
 import {
   requireAuth,
   requireRole,
@@ -13,26 +14,44 @@ import {
 
 const router = Router();
 
-/* ----------------------- 🏦 Rotas de Solicitação de Saque ----------------------- */
+/* -------------------------------------------------------
+💸 CRIAR SAQUE (SELLER)
+-------------------------------------------------------- */
+router.post(
+  "/create",
+  requireAuth,
+  requireSellerAccess,
+  createCashoutRequest
+);
 
-/**
- * Seller ativo + 2FA
- */
-router.post("/request", requireAuth, requireSellerAccess, createCashoutRequest);
+/* -------------------------------------------------------
+📋 LISTAR SAQUES (ADMIN)
+-------------------------------------------------------- */
+router.get(
+  "/admin/list",
+  requireAuth,
+  requireRole(["admin", "master"]),
+  listCashoutRequests
+);
 
-/**
- * Admin/master
- */
-router.get("/list", requireAuth, requireRole(["admin", "master"]), listCashoutRequests);
+/* -------------------------------------------------------
+🔓 LIBERAR SALDO MANUAL (ADMIN)
+-------------------------------------------------------- */
+router.post(
+  "/admin/release/:userId",
+  requireAuth,
+  requireRole(["admin", "master"]),
+  releaseBalanceManually
+);
 
-/**
- * Admin/master
- */
-router.patch("/release/:userId", requireAuth, requireRole(["admin", "master"]), releaseBalanceManually);
-
-/**
- * Admin/master
- */
-router.patch("/:id", requireAuth, requireRole(["admin", "master"]), updateCashoutStatus);
+/* -------------------------------------------------------
+🛠 APROVAR / REJEITAR SAQUE (ADMIN)
+-------------------------------------------------------- */
+router.patch(
+  "/admin/:id/status",
+  requireAuth,
+  requireRole(["admin", "master"]),
+  updateCashoutStatus
+);
 
 export default router;

@@ -1,22 +1,16 @@
 import { Router } from "express";
-import {
-  createCryptoCharge,
-  simulateCryptoPayment,
-} from "../controllers/crypto.controller";
-import {
-  requireAuth,
-  requireSellerAccess,
-  requireRole,
-} from "../middleware/auth.middleware";
 
 const router = Router();
 
-router.post("/create", requireAuth, requireSellerAccess, createCryptoCharge);
+/*
+  FASE 1 — rota de criação de cobrança cripto aposentada.
 
-/**
- * Endpoint de simulação sensível.
- * Mantido restrito para admin/master neste estágio.
- */
-router.post("/:id/simulate-payment", requireAuth, requireRole(["admin", "master"]), simulateCryptoPayment);
+  Fluxo oficial:
+  POST /api/transactions/create/crypto
+
+  Este arquivo fica isolado temporariamente para evitar
+  duplicidade de rotas e conflitos com o núcleo unificado
+  de transactions.
+*/
 
 export default router;

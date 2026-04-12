@@ -14,6 +14,9 @@ const app = express();
 
 app.set("trust proxy", 1);
 
+/* -------------------------------------------------------
+🌐 CORS
+-------------------------------------------------------- */
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -34,17 +37,47 @@ app.use(
   })
 );
 
+/* -------------------------------------------------------
+🛡 Segurança básica
+-------------------------------------------------------- */
 app.use(helmet());
 app.use(morgan("dev"));
+
+/* -------------------------------------------------------
+🔥 RAW BODY (WEBHOOK - MUITO IMPORTANTE)
+-------------------------------------------------------- */
+app.use(
+  "/api/transactions/webhook",
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
+
+/* -------------------------------------------------------
+📦 JSON padrão (resto da API)
+-------------------------------------------------------- */
 app.use(express.json());
 
-// ✅ libera acesso público aos arquivos enviados para /uploads
+/* -------------------------------------------------------
+📁 Uploads
+-------------------------------------------------------- */
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
+/* -------------------------------------------------------
+🧠 DB
+-------------------------------------------------------- */
 connectDB();
 
+/* -------------------------------------------------------
+🚀 ROTAS
+-------------------------------------------------------- */
 app.use("/api", routes);
 
+/* -------------------------------------------------------
+🏠 Health check
+-------------------------------------------------------- */
 app.get("/", (_req: Request, res: Response) => {
   res.status(200).json({
     status: true,
@@ -52,6 +85,9 @@ app.get("/", (_req: Request, res: Response) => {
   });
 });
 
+/* -------------------------------------------------------
+❌ 404
+-------------------------------------------------------- */
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
     status: false,
@@ -59,6 +95,9 @@ app.use((_req: Request, res: Response) => {
   });
 });
 
+/* -------------------------------------------------------
+💥 ERROS
+-------------------------------------------------------- */
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error("Erro interno:", err.stack);
   res.status(500).json({
@@ -67,6 +106,9 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
+/* -------------------------------------------------------
+🚀 START
+-------------------------------------------------------- */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
