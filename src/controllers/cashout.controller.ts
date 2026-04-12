@@ -1,4 +1,3 @@
-
 import { Request, Response } from "express";
 import axios from "axios";
 import crypto from "crypto";
@@ -21,6 +20,12 @@ type ZendryPixPaymentResponse = {
     idempotent_id?: string;
   };
 };
+
+type PixProvider = "zendry" | "cartwavehub";
+
+type PixKeyType = "cpf" | "cnpj" | "email" | "phone" | "random";
+
+type InternalCashoutStatus = "processing" | "completed" | "failed";
 
 function getBearerToken(req: Request): string {
   return req.headers.authorization?.replace("Bearer ", "").trim() ?? "";
@@ -45,25 +50,17 @@ function onlyNumbers(value: string = ""): string {
   return value.replace(/\D/g, "");
 }
 
-function normalizePixKeyType(value: string = ""):
-  | "cpf"
-  | "cnpj"
-  | "email"
-  | "phone"
-  | "random" {
+function normalizePixKeyType(value: string = ""): PixKeyType {
   const normalized = String(value || "").trim().toLowerCase();
 
   if (["cpf", "cnpj", "email", "phone", "random"].includes(normalized)) {
-    return normalized as "cpf" | "cnpj" | "email" | "phone" | "random";
+    return normalized as PixKeyType;
   }
 
   return "cpf";
 }
 
-function mapZendryStatusToInternal(status: string = ""):
-  | "processing"
-  | "completed"
-  | "failed" {
+function mapZendryStatusToInternal(status: string = ""): InternalCashoutStatus {
   const normalized = String(status || "").trim().toLowerCase();
 
   if (["completed", "paid", "success"].includes(normalized)) {
@@ -133,7 +130,7 @@ async function getZendryAccessToken(): Promise<{
 async function sendPixCashoutToZendry(input: {
   amount: number;
   pixKey: string;
-  pixKeyType: "cpf" | "cnpj" | "email" | "phone" | "random";
+  pixKeyType: PixKeyType;
   receiverName?: string;
   receiverDocument?: string;
   cashoutId: string;
@@ -176,10 +173,69 @@ async function sendPixCashoutToZendry(input: {
   const payment = data?.payment || {};
 
   return {
+    provider: "zendry" as PixProvider,
     providerId: String(payment.id || "").trim(),
     providerStatus: String(payment.status || "").trim(),
     providerReference: String(payment.reference_code || referenceCode).trim(),
     providerIdempotencyKey: String(payment.idempotent_id || idempotencyKey).trim(),
+  };
+}
+
+async function sendPixCashout(
+  provider: PixProvider,
+  input: {
+    amount: number;
+    pixKey: string;
+    pixKeyType: PixKeyType;
+    receiverName?: string;
+    receiverDocument?: string;
+    cashoutId: string;
+  }
+) {
+  if (provider === "zendry") {
+    return sendPixCashoutToZendry(input);
+  }
+
+  if (provider === "cartwavehub") {
+    throw new Error("CARTWAVE_NOT_IMPLEMENTED");
+  }
+
+  throw new Error("INVALID_PROVIDER");
+}
+
+function resolveUserPixProvider(user: any): {
+  provider: PixProvider;
+  allowFallback: boolean;
+  fallbackProvider?: PixProvider;
+  allowedProviders: PixProvider[];
+} {
+  const rawConfig = user?.pixPayoutConfig || {};
+
+  const allowedProviders = Array.isArray(rawConfig.allowedProviders)
+    ? rawConfig.allowedProviders.filter((item: unknown) =>
+        ["zendry", "cartwavehub"].includes(String(item))
+      )
+    : ["zendry"];
+
+  const normalizedAllowed = (allowedProviders.length
+    ? allowedProviders
+    : ["zendry"]) as PixProvider[];
+
+  const defaultProvider = normalizedAllowed.includes(rawConfig.defaultProvider)
+    ? (rawConfig.defaultProvider as PixProvider)
+    : normalizedAllowed[0];
+
+  const fallbackProvider =
+    rawConfig.fallbackProvider &&
+    normalizedAllowed.includes(rawConfig.fallbackProvider)
+      ? (rawConfig.fallbackProvider as PixProvider)
+      : undefined;
+
+  return {
+    provider: defaultProvider,
+    allowFallback: Boolean(rawConfig.allowFallback),
+    fallbackProvider,
+    allowedProviders: normalizedAllowed,
   };
 }
 
@@ -229,6 +285,8 @@ export const createCashoutRequest = async (
         throw new Error("USER_NOT_FOUND");
       }
 
+      const providerConfig = resolveUserPixProvider(user);
+
       const wallet = await Wallet.findOne({ userId: user._id }).session(session);
 
       if (!wallet) {
@@ -247,7 +305,7 @@ export const createCashoutRequest = async (
             userId: user._id,
             amount: rawAmount,
             method: "pix",
-            provider: "zendry",
+            provider: providerConfig.provider,
             providerReference: "",
             providerIdempotencyKey: "",
             providerId: "",
@@ -311,6 +369,7 @@ export const createCashoutRequest = async (
           id: cashoutId.toString(),
           amount: createdCashoutDoc.amount,
           method: createdCashoutDoc.method,
+          provider: createdCashoutDoc.provider,
           status: createdCashoutDoc.status,
           pixKey: createdCashoutDoc.pixKey,
           pixKeyType: createdCashoutDoc.pixKeyType,
@@ -358,9 +417,9 @@ export const listCashoutRequests = async (
 ): Promise<void> => {
   try {
     const pendingCashouts = await CashoutRequest.find({
-      status: { $in: ["pending_admin", "processing"] },
+      status: { $in: ["pending_admin", "processing", "approved_admin"] },
     })
-      .populate("userId", "name email role accountStatus")
+      .populate("userId", "name email role accountStatus pixPayoutConfig")
       .sort({ createdAt: -1 });
 
     const pendingIds = pendingCashouts.map((item: any) =>
@@ -405,6 +464,7 @@ export const listCashoutRequests = async (
           provider: cashout.provider || "",
           providerStatus: cashout.providerStatus || "",
           providerReference: cashout.providerReference || "",
+          providerId: cashout.providerId || "",
           pixKey: cashout.pixKey || "",
           pixKeyType: cashout.pixKeyType || "",
           receiverName: cashout.receiverName || "",
@@ -464,7 +524,7 @@ export const releaseBalanceManually = async (
 
       const pendingCashouts = await CashoutRequest.find({
         userId: user._id,
-        status: { $in: ["pending_admin", "processing"] },
+        status: { $in: ["pending_admin", "processing", "approved_admin"] },
       }).session(session);
 
       const pendingCashoutIds = pendingCashouts.map((cashout: any) =>
@@ -700,8 +760,18 @@ export const updateCashoutStatus = async (
         return;
       }
 
+      const user: any = await User.findById(cashout.userId);
+
+      if (!user) {
+        res.status(404).json({ status: false, msg: "Usuário não encontrado." });
+        return;
+      }
+
+      const providerConfig = resolveUserPixProvider(user);
+      const selectedProvider = providerConfig.provider;
+
       try {
-        const providerResult = await sendPixCashoutToZendry({
+        const providerResult = await sendPixCashout(selectedProvider, {
           amount: Number(cashout.amount || 0),
           pixKey: String(cashout.pixKey || "").trim(),
           pixKeyType: normalizePixKeyType(String(cashout.pixKeyType || "cpf")),
@@ -737,7 +807,7 @@ export const updateCashoutStatus = async (
               throw new Error("FROZEN_ENTRY_NOT_FOUND");
             }
 
-            currentCashout.provider = "zendry";
+            currentCashout.provider = providerResult.provider;
             currentCashout.providerId = providerResult.providerId;
             currentCashout.providerReference = providerResult.providerReference;
             currentCashout.providerIdempotencyKey = providerResult.providerIdempotencyKey;
@@ -843,7 +913,7 @@ export const updateCashoutStatus = async (
           await finalizeSession.endSession();
         }
       } catch (providerError) {
-        console.error("❌ Erro ao enviar saque PIX para a Zendry:", providerError);
+        console.error("❌ Erro ao enviar saque PIX para o provedor:", providerError);
 
         const rollbackSession = await mongoose.startSession();
 
@@ -876,8 +946,9 @@ export const updateCashoutStatus = async (
             wallet.balance.unAvailable.splice(frozenIndex, 1);
 
             currentCashout.status = "failed";
-            currentCashout.provider = "zendry";
-            currentCashout.providerStatus = "provider_error";
+            currentCashout.provider = selectedProvider;
+            currentCashout.providerStatus =
+              providerError instanceof Error ? providerError.message : "provider_error";
             currentCashout.failureReason =
               providerError instanceof Error
                 ? providerError.message
@@ -905,7 +976,10 @@ export const updateCashoutStatus = async (
 
             responsePayload = {
               status: false,
-              msg: "Falha ao enviar saque PIX ao provedor. O saldo foi estornado.",
+              msg:
+                currentCashout.providerStatus === "CARTWAVE_NOT_IMPLEMENTED"
+                  ? "CartwaveHub ainda não foi implementada no backend. O saldo foi estornado."
+                  : "Falha ao enviar saque PIX ao provedor. O saldo foi estornado.",
               cashout: {
                 id: cashoutObjectId.toString(),
                 status: currentCashout.status,
@@ -927,10 +1001,10 @@ export const updateCashoutStatus = async (
     }
 
     const isSuccess = Boolean(
-  responsePayload &&
-    typeof (responsePayload as { status?: boolean }).status === "boolean" &&
-    (responsePayload as { status?: boolean }).status === true
-);
+      responsePayload &&
+        typeof (responsePayload as { status?: boolean }).status === "boolean" &&
+        (responsePayload as { status?: boolean }).status === true
+    );
 
     res.status(isSuccess ? 200 : 500).json(responsePayload);
   } catch (error) {
@@ -963,6 +1037,11 @@ export const updateCashoutStatus = async (
         return;
       }
 
+      if (error.message === "USER_NOT_FOUND") {
+        res.status(404).json({ status: false, msg: "Usuário não encontrado." });
+        return;
+      }
+
       if (error.message === "ZENDRY_BASE_URL_NOT_CONFIGURED") {
         res.status(500).json({
           status: false,
@@ -983,6 +1062,22 @@ export const updateCashoutStatus = async (
         res.status(500).json({
           status: false,
           msg: "A Zendry não retornou access token.",
+        });
+        return;
+      }
+
+      if (error.message === "CARTWAVE_NOT_IMPLEMENTED") {
+        res.status(500).json({
+          status: false,
+          msg: "CartwaveHub ainda não foi implementada no backend.",
+        });
+        return;
+      }
+
+      if (error.message === "INVALID_PROVIDER") {
+        res.status(500).json({
+          status: false,
+          msg: "Provider PIX inválido para saque.",
         });
         return;
       }

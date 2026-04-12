@@ -60,6 +60,16 @@ interface IUserTokenConfig {
   };
 }
 
+type PixProvider = "zendry" | "cartwavehub";
+
+interface IPixPayoutConfig {
+  enabled: boolean;
+  allowedProviders: PixProvider[];
+  defaultProvider: PixProvider;
+  fallbackProvider?: PixProvider;
+  allowFallback: boolean;
+}
+
 export interface IUser extends Document {
   name: string;
   email: string;
@@ -81,6 +91,8 @@ export interface IUser extends Document {
   notifications: boolean;
   split: ISplit;
   token?: IUserTokenConfig;
+
+  pixPayoutConfig?: IPixPayoutConfig;
 
   emailVerified: boolean;
   emailVerificationToken: string;
@@ -207,6 +219,32 @@ const userSchema = new Schema<IUser>(
       },
     },
 
+    pixPayoutConfig: {
+      enabled: {
+        type: Boolean,
+        default: true,
+      },
+      allowedProviders: {
+        type: [String],
+        enum: ["zendry", "cartwavehub"],
+        default: ["zendry"],
+      },
+      defaultProvider: {
+        type: String,
+        enum: ["zendry", "cartwavehub"],
+        default: "zendry",
+      },
+      fallbackProvider: {
+        type: String,
+        enum: ["zendry", "cartwavehub"],
+        default: "cartwavehub",
+      },
+      allowFallback: {
+        type: Boolean,
+        default: true,
+      },
+    },
+
     emailVerified: {
       type: Boolean,
       default: false,
@@ -281,5 +319,7 @@ userSchema.index({ accountStatus: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ emailVerificationToken: 1 });
 userSchema.index({ passwordResetToken: 1 });
+userSchema.index({ "pixPayoutConfig.defaultProvider": 1 });
+userSchema.index({ "pixPayoutConfig.allowedProviders": 1 });
 
 export const User = mongoose.model<IUser>("User", userSchema);
