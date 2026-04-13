@@ -5,7 +5,6 @@ import { User } from "../models/user.model";
 import { Product } from "../models/product.model";
 import { Checkout } from "../models/checkout.model";
 
-/* 🔑 Utilitário: pegar usuário pelo token */
 const getUserFromToken = async (token?: string) => {
   if (!token) return null;
   const payload = await decodeToken(token.replace("Bearer ", ""));
@@ -13,7 +12,75 @@ const getUserFromToken = async (token?: string) => {
   return await User.findById(payload.id).lean();
 };
 
-/* 🛒 Criar novo checkout */
+const normalizeCheckout = (checkout: any) => {
+  if (!checkout) return checkout;
+
+  const plain =
+    typeof checkout.toObject === "function" ? checkout.toObject() : checkout;
+
+  return {
+    id: String(plain._id),
+    ...plain,
+    _id: undefined,
+  };
+};
+
+const extractProductIdFromConfig = (config?: any): string | null => {
+  if (!config?.sections?.length) return null;
+
+  const productSection = config.sections.find((s: any) => s?.type === "product");
+  const productId = productSection?.config?.productId;
+
+  if (!productId || typeof productId !== "string") return null;
+  if (!mongoose.Types.ObjectId.isValid(productId)) return null;
+
+  return productId;
+};
+
+/* =========================================================
+   NOVO PADRÃO REST — CHECKOUT BUILDER
+========================================================= */
+
+export const listCheckouts = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = await getUserFromToken(req.headers.authorization);
+    if (!user) {
+      res.status(403).json({ status: false, msg: "Token inválido." });
+      return;
+    }
+
+    const page = Math.max(Number(req.query.page || 1), 1);
+    const limit = Math.max(Number(req.query.limit || 50), 1);
+
+    const filter: any = { userId: user._id };
+
+    const [itemsRaw, total] = await Promise.all([
+      Checkout.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Checkout.countDocuments(filter),
+    ]);
+
+    const items = itemsRaw.map((item: any) => normalizeCheckout(item));
+
+    res.status(200).json({
+      status: true,
+      items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(Math.ceil(total / limit), 1),
+      },
+    });
+  } catch (error) {
+    console.error("❌ Erro em listCheckouts:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao listar checkouts." });
+  }
+};
+
 export const createCheckout = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = await getUserFromToken(req.headers.authorization);
@@ -22,20 +89,57 @@ export const createCheckout = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const { productId, productName, settings } = req.body;
+    const { name, config, productId, productName, settings } = req.body;
 
-    // ✅ Valida campos obrigatórios
+    // ===== MODO NOVO (builder)
+    if (config || name) {
+      let finalProductId: mongoose.Types.ObjectId | null = null;
+
+      const fromConfig = extractProductIdFromConfig(config);
+      const fromBody = typeof productId === "string" && mongoose.Types.ObjectId.isValid(productId)
+        ? productId
+        : null;
+
+      const resolvedProductId = fromBody || fromConfig;
+
+      if (resolvedProductId) {
+        const product = await Product.findOne({
+          _id: new mongoose.Types.ObjectId(resolvedProductId),
+          userId: user._id,
+        }).lean();
+
+        if (product) {
+          finalProductId = new mongoose.Types.ObjectId(resolvedProductId);
+        }
+      }
+
+      const checkout = new Checkout({
+        userId: user._id,
+        name: name || "Novo Checkout",
+        productId: finalProductId,
+        config: config || {
+          theme: {},
+          sections: [],
+        },
+      });
+
+      const saved = await checkout.save();
+
+      res.status(201).json({
+        status: true,
+        msg: "Checkout criado com sucesso.",
+        id: String(saved._id),
+        checkout: normalizeCheckout(saved),
+      });
+      return;
+    }
+
+    // ===== MODO LEGADO
     if (!productId && !productName) {
       res.status(400).json({ status: false, msg: "Informe o ID ou o nome do produto." });
       return;
     }
 
-    if (!settings?.headCode || !settings?.bodyCode) {
-      res.status(400).json({ status: false, msg: "Campos headCode e bodyCode são obrigatórios." });
-      return;
-    }
-
-    // 🔍 Busca o produto por ID ou nome
     const productQuery: any = { userId: user._id };
     if (productId) {
       if (!mongoose.Types.ObjectId.isValid(productId)) {
@@ -52,18 +156,18 @@ export const createCheckout = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    // 🏗️ Cria o checkout
     const checkout = new Checkout({
       userId: user._id,
       productId: product._id,
+      name: product.name,
       settings: {
         logoUrl: "/",
         bannerUrl: "/",
         redirectUrl: "/",
         validateDocument: false,
         needAddress: false,
-        headCode: settings.headCode,
-        bodyCode: settings.bodyCode,
+        headCode: settings?.headCode || "",
+        bodyCode: settings?.bodyCode || "",
       },
       paymentMethods: {
         creditCard: { enabled: true, discount: 0 },
@@ -76,6 +180,10 @@ export const createCheckout = async (req: Request, res: Response): Promise<void>
       testimonials: { status: false, reviews: [] },
       background: "white",
       colors: "#FF9800",
+      config: {
+        theme: {},
+        sections: [],
+      },
     });
 
     const savedCheckout = await checkout.save();
@@ -84,7 +192,9 @@ export const createCheckout = async (req: Request, res: Response): Promise<void>
       status: true,
       msg: "Checkout criado com sucesso.",
       checkoutId: String(savedCheckout._id),
+      id: String(savedCheckout._id),
       product: { id: String(product._id), name: product.name },
+      checkout: normalizeCheckout(savedCheckout),
     });
   } catch (error) {
     console.error("❌ Erro em createCheckout:", error);
@@ -92,7 +202,136 @@ export const createCheckout = async (req: Request, res: Response): Promise<void>
   }
 };
 
-/* 🌐 Obter checkout público */
+export const getCheckoutById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = await getUserFromToken(req.headers.authorization);
+    if (!user) {
+      res.status(403).json({ status: false, msg: "Token inválido." });
+      return;
+    }
+
+    const { id } = req.params;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID do checkout inválido." });
+      return;
+    }
+
+    const checkout = await Checkout.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      userId: user._id,
+    }).lean();
+
+    if (!checkout) {
+      res.status(404).json({ status: false, msg: "Checkout não encontrado." });
+      return;
+    }
+
+    res.status(200).json(normalizeCheckout(checkout));
+  } catch (error) {
+    console.error("❌ Erro em getCheckoutById:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao buscar checkout." });
+  }
+};
+
+export const updateCheckout = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = await getUserFromToken(req.headers.authorization);
+    if (!user) {
+      res.status(403).json({ status: false, msg: "Token inválido." });
+      return;
+    }
+
+    const id = req.params.id || req.body._id || req.body.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID do checkout inválido." });
+      return;
+    }
+
+    const { name, config, status, ...legacyUpdates } = req.body;
+
+    const updates: any = {};
+
+    if (name !== undefined) updates.name = name;
+    if (status !== undefined) updates.status = status;
+
+    if (config !== undefined) {
+      updates.config = config;
+
+      const extractedProductId = extractProductIdFromConfig(config);
+      if (extractedProductId) {
+        const product = await Product.findOne({
+          _id: new mongoose.Types.ObjectId(extractedProductId),
+          userId: user._id,
+        }).lean();
+
+        if (product) {
+          updates.productId = new mongoose.Types.ObjectId(extractedProductId);
+        }
+      } else {
+        updates.productId = null;
+      }
+    }
+
+    Object.assign(updates, legacyUpdates);
+
+    const checkout = await Checkout.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(id), userId: user._id },
+      { $set: updates },
+      { new: true, runValidators: true, lean: true }
+    );
+
+    if (!checkout) {
+      res.status(404).json({ status: false, msg: "Checkout não encontrado." });
+      return;
+    }
+
+    res.status(200).json({
+      status: true,
+      msg: "Checkout atualizado com sucesso.",
+      checkout: normalizeCheckout(checkout),
+      id: String(checkout._id),
+    });
+  } catch (error) {
+    console.error("❌ Erro em updateCheckout:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao atualizar checkout." });
+  }
+};
+
+export const deleteCheckout = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = await getUserFromToken(req.headers.authorization);
+    if (!user) {
+      res.status(403).json({ status: false, msg: "Token inválido." });
+      return;
+    }
+
+    const id = req.params.id || req.body.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID do checkout inválido." });
+      return;
+    }
+
+    const result = await Checkout.deleteOne({
+      _id: new mongoose.Types.ObjectId(id),
+      userId: user._id,
+    });
+
+    if (result.deletedCount === 0) {
+      res.status(404).json({ status: false, msg: "Checkout não encontrado." });
+      return;
+    }
+
+    res.status(200).json({ status: true, msg: "Checkout deletado com sucesso." });
+  } catch (error) {
+    console.error("❌ Erro em deleteCheckout:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao deletar checkout." });
+  }
+};
+
+/* =========================================================
+   LEGADO
+========================================================= */
+
 export const getPublicCheckout = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.query;
@@ -117,16 +356,17 @@ export const getPublicCheckout = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const product = await Product.findById(checkout.productId).lean();
+    const product = checkout.productId
+      ? await Product.findById(checkout.productId).lean()
+      : null;
 
-    res.status(200).json({ status: true, checkout, product });
+    res.status(200).json({ status: true, checkout: normalizeCheckout(checkout), product });
   } catch (error) {
     console.error("❌ Erro em getPublicCheckout:", error);
     res.status(500).json({ status: false, msg: "Erro interno ao consultar checkout." });
   }
 };
 
-/* 🔐 Obter checkout do usuário autenticado */
 export const getCheckout = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = await getUserFromToken(req.headers.authorization);
@@ -151,70 +391,9 @@ export const getCheckout = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    res.status(200).json({ status: true, checkout });
+    res.status(200).json({ status: true, checkout: normalizeCheckout(checkout) });
   } catch (error) {
     console.error("❌ Erro em getCheckout:", error);
     res.status(500).json({ status: false, msg: "Erro interno ao buscar checkout." });
-  }
-};
-
-/* ❌ Deletar checkout */
-export const deleteCheckout = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const user = await getUserFromToken(req.headers.authorization);
-    if (!user) {
-      res.status(403).json({ status: false, msg: "Token inválido." });
-      return;
-    }
-
-    const { id } = req.body;
-    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      res.status(400).json({ status: false, msg: "ID do checkout inválido." });
-      return;
-    }
-
-    const result = await Checkout.deleteOne({ _id: new mongoose.Types.ObjectId(id), userId: user._id });
-    if (result.deletedCount === 0) {
-      res.status(404).json({ status: false, msg: "Checkout não encontrado." });
-      return;
-    }
-
-    res.status(200).json({ status: true, msg: "Checkout deletado com sucesso." });
-  } catch (error) {
-    console.error("❌ Erro em deleteCheckout:", error);
-    res.status(500).json({ status: false, msg: "Erro interno ao deletar checkout." });
-  }
-};
-
-/* 🔄 Atualizar checkout */
-export const updateCheckout = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const user = await getUserFromToken(req.headers.authorization);
-    if (!user) {
-      res.status(403).json({ status: false, msg: "Token inválido." });
-      return;
-    }
-
-    const { _id, ...updates } = req.body;
-    if (!_id || !mongoose.Types.ObjectId.isValid(_id)) {
-      res.status(400).json({ status: false, msg: "ID do checkout inválido." });
-      return;
-    }
-
-    const checkout = await Checkout.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(_id), userId: user._id },
-      { $set: updates },
-      { new: true, runValidators: true, lean: true }
-    );
-
-    if (!checkout) {
-      res.status(404).json({ status: false, msg: "Checkout não encontrado." });
-      return;
-    }
-
-    res.status(200).json({ status: true, msg: "Checkout atualizado com sucesso.", checkout });
-  } catch (error) {
-    console.error("❌ Erro em updateCheckout:", error);
-    res.status(500).json({ status: false, msg: "Erro interno ao atualizar checkout." });
   }
 };

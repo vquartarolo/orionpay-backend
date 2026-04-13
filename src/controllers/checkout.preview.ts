@@ -1,4 +1,3 @@
-// src/controllers/checkout.preview.ts
 import { RequestHandler } from "express";
 import { Checkout } from "../models/checkout.model";
 import { Product } from "../models/product.model";
@@ -7,6 +6,7 @@ import { User } from "../models/user.model";
 export const renderCheckoutPreview: RequestHandler = async (req, res) => {
   try {
     const { id } = req.query;
+
     if (!id || typeof id !== "string") {
       res.status(400).send("ID do checkout é obrigatório.");
       return;
@@ -24,21 +24,29 @@ export const renderCheckoutPreview: RequestHandler = async (req, res) => {
       return;
     }
 
-    const product = await Product.findById(checkout.productId).lean();
-    if (!product) {
-      res.status(404).send("Produto não encontrado.");
-      return;
-    }
+    const product = checkout.productId
+      ? await Product.findById(checkout.productId).lean()
+      : null;
 
     const backgroundColor = checkout.background === "dark" ? "#111" : "#fff";
     const textColor = checkout.background === "dark" ? "#fff" : "#000";
+
+    const bannerUrl =
+      checkout.settings?.bannerUrl ||
+      "https://via.placeholder.com/600x200?text=Banner";
+
+    const productName = product?.name || "Produto";
+    const productPrice =
+      typeof product?.price === "number"
+        ? product.price.toFixed(2)
+        : "0.00";
 
     const html = `
       <!DOCTYPE html>
       <html lang="pt-BR">
         <head>
           <meta charset="UTF-8" />
-          <title>Preview - ${product.name}</title>
+          <title>Preview - ${productName}</title>
           <style>
             body {
               font-family: Arial, sans-serif;
@@ -63,7 +71,7 @@ export const renderCheckoutPreview: RequestHandler = async (req, res) => {
               border-radius: 6px;
             }
             .button {
-              background-color: ${checkout.colors};
+              background-color: ${checkout.colors || "#FF9800"};
               color: white;
               padding: 12px 24px;
               text-decoration: none;
@@ -76,9 +84,9 @@ export const renderCheckoutPreview: RequestHandler = async (req, res) => {
         </head>
         <body>
           <div class="container">
-            <img src="${checkout.settings.bannerUrl || "https://via.placeholder.com/600x200?text=Banner"}" class="banner" alt="Banner do produto" />
-            <h1>${product.name}</h1>
-            <p>Preço: R$ ${product.price.toFixed(2)}</p>
+            <img src="${bannerUrl}" class="banner" alt="Banner do produto" />
+            <h1>${productName}</h1>
+            <p>Preço: R$ ${productPrice}</p>
             <a href="#" class="button">Comprar agora</a>
           </div>
         </body>
