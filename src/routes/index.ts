@@ -11,6 +11,8 @@ import kycRoutes from "./kyc.routes";
 import sessionRoutes from "./session.routes";
 // ❌ paymentRoutes removido
 import adminRoutes from "./admin.routes";
+import productsRoutes from "./products.routes";
+import checkoutRoutes from "./checkout.routes";
 
 const router = Router();
 
@@ -25,5 +27,8 @@ router.use("/2fa", twofaRoutes);
 router.use("/kyc", kycRoutes);
 router.use("/sessions", sessionRoutes);
 // ❌ router.use("/payment", paymentRoutes);
+
+router.use("/products", productsRoutes);
+router.use("/checkout", checkoutRoutes);
 
 export default router;
