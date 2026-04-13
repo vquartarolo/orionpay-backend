@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import {
   createProduct,
   deleteProduct,
@@ -8,44 +8,88 @@ import {
 
 const router = Router();
 
-/* -------------------------------------------------------
-📦 ROTAS DE PRODUTOS
-Prefixo base: /api/products
--------------------------------------------------------- */
+/*
+  Prefixo real no servidor:
+  /api/products
+*/
+
+/* =========================
+   NOVO PADRÃO REST (frontend novo)
+========================= */
 
 /**
- * 🆕 Criar um novo produto vinculado ao usuário autenticado
- * @route   POST /api/products/create
- * @access  Privado (necessário token)
+ * POST /api/products
+ * Criar produto
  */
-router.post("/create", async (req, res) => {
+router.post("/", async (req: Request, res: Response) => {
   await createProduct(req, res);
 });
 
 /**
- * 🗑️ Deletar um produto existente pelo nome
- * @route   DELETE /api/products/delete
- * @access  Privado (necessário token)
+ * GET /api/products/:id
+ * Buscar produto por ID
  */
-router.delete("/delete", async (req, res) => {
-  await deleteProduct(req, res);
+router.get("/:id", async (req: Request, res: Response) => {
+  req.query.id = req.params.id;
+  await getProduct(req, res);
 });
 
 /**
- * ✏️ Editar dados de um produto existente
- * @route   PATCH /api/products/edit
- * @access  Privado (necessário token)
+ * PATCH /api/products/:id
+ * Editar produto por ID
+ *
+ * Observação:
+ * seu controller atual edita por oldName/newName.
+ * Então por enquanto mantemos compatibilidade recebendo o payload
+ * do front e repassando junto. Se o front mandar por id, depois
+ * ajustamos o controller para edição por id de forma completa.
  */
-router.patch("/edit", async (req, res) => {
+router.patch("/:id", async (req: Request, res: Response) => {
   await editProduct(req, res);
 });
 
 /**
- * 🔍 Buscar produto por ID
- * @route   GET /api/products/get?id=<ID_DO_PRODUTO>
- * @access  Público
+ * DELETE /api/products/:id
+ * Deletar produto por ID
+ *
+ * Observação:
+ * seu controller atual deleta por name.
+ * Mantemos a rota pronta, mas se o front usar delete por id,
+ * depois ajustamos o controller para deletar por _id.
  */
-router.get("/get", async (req, res) => {
+router.delete("/:id", async (req: Request, res: Response) => {
+  await deleteProduct(req, res);
+});
+
+/* =========================
+   ROTAS LEGADAS (mantidas)
+========================= */
+
+/**
+ * POST /api/products/create
+ */
+router.post("/create", async (req: Request, res: Response) => {
+  await createProduct(req, res);
+});
+
+/**
+ * DELETE /api/products/delete
+ */
+router.delete("/delete", async (req: Request, res: Response) => {
+  await deleteProduct(req, res);
+});
+
+/**
+ * PATCH /api/products/edit
+ */
+router.patch("/edit", async (req: Request, res: Response) => {
+  await editProduct(req, res);
+});
+
+/**
+ * GET /api/products/get?id=...
+ */
+router.get("/get", async (req: Request, res: Response) => {
   await getProduct(req, res);
 });
 
