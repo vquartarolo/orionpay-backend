@@ -15,6 +15,59 @@ const getUserFromToken = async (token?: string) => {
 };
 
 /* -------------------------------------------------------
+📋 Listar produtos do usuário autenticado
+Compatível com frontend novo:
+GET /products?page=1&limit=50&search=...&status=...
+-------------------------------------------------------- */
+export const listProducts = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = await getUserFromToken(req.headers.authorization);
+    if (!user) {
+      res.status(403).json({ status: false, msg: "Token inválido ou usuário não autenticado." });
+      return;
+    }
+
+    const page = Math.max(Number(req.query.page || 1), 1);
+    const limit = Math.max(Number(req.query.limit || 50), 1);
+    const search = String(req.query.search || "").trim();
+    const status = String(req.query.status || "").trim();
+
+    const filter: any = { userId: user._id };
+
+    if (search) {
+      filter.name = { $regex: search, $options: "i" };
+    }
+
+    if (status && status !== "all" && status !== "todos") {
+      filter.status = status;
+    }
+
+    const [items, total] = await Promise.all([
+      Product.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Product.countDocuments(filter),
+    ]);
+
+    res.status(200).json({
+      status: true,
+      items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(Math.ceil(total / limit), 1),
+      },
+    });
+  } catch (error) {
+    console.error("❌ Erro em listProducts:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao listar produtos." });
+  }
+};
+
+/* -------------------------------------------------------
 🆕 Criar produto
 -------------------------------------------------------- */
 export const createProduct = async (req: Request, res: Response): Promise<void> => {
@@ -62,6 +115,9 @@ export const createProduct = async (req: Request, res: Response): Promise<void> 
 
 /* -------------------------------------------------------
 🗑️ Deletar produto
+Compatível com:
+- rota antiga por name
+- rota nova por :id
 -------------------------------------------------------- */
 export const deleteProduct = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -71,9 +127,26 @@ export const deleteProduct = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
+    const idFromParams = req.params.id;
     const { name } = req.body;
+
+    if (idFromParams && mongoose.Types.ObjectId.isValid(idFromParams)) {
+      const deleted = await Product.deleteOne({
+        _id: new mongoose.Types.ObjectId(idFromParams),
+        userId: user._id,
+      });
+
+      if (!deleted.deletedCount) {
+        res.status(404).json({ status: false, msg: "Produto não encontrado." });
+        return;
+      }
+
+      res.status(200).json({ status: true, msg: "✅ Produto deletado com sucesso." });
+      return;
+    }
+
     if (!name) {
-      res.status(400).json({ status: false, msg: "O campo 'name' é obrigatório para deletar o produto." });
+      res.status(400).json({ status: false, msg: "Informe o ID na rota ou o campo 'name' no body." });
       return;
     }
 
@@ -92,6 +165,9 @@ export const deleteProduct = async (req: Request, res: Response): Promise<void> 
 
 /* -------------------------------------------------------
 ✏️ Editar produto
+Compatível com:
+- rota antiga por oldName/newName
+- rota nova por :id
 -------------------------------------------------------- */
 export const editProduct = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -101,25 +177,37 @@ export const editProduct = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    let { oldName, newName, description, price, status, category } = req.body;
-
-    if (!oldName) {
-      res.status(400).json({ status: false, msg: "O campo 'oldName' é obrigatório para editar um produto." });
-      return;
-    }
+    let { oldName, newName, name, description, price, status, category } = req.body;
+    const idFromParams = req.params.id;
 
     if (typeof status === "boolean") {
       status = status ? "active" : "inactive";
     }
 
-    const product = await Product.findOne({ name: oldName, userId: user._id });
+    let product = null;
+
+    if (idFromParams && mongoose.Types.ObjectId.isValid(idFromParams)) {
+      product = await Product.findOne({
+        _id: new mongoose.Types.ObjectId(idFromParams),
+        userId: user._id,
+      });
+    } else {
+      if (!oldName) {
+        res.status(400).json({ status: false, msg: "Informe o ID na rota ou o campo 'oldName'." });
+        return;
+      }
+
+      product = await Product.findOne({ name: oldName, userId: user._id });
+    }
+
     if (!product) {
       res.status(404).json({ status: false, msg: "Produto não encontrado." });
       return;
     }
 
     if (newName) product.name = newName;
-    if (description) product.description = description;
+    if (name) product.name = name;
+    if (description !== undefined) product.description = description;
     if (price !== undefined) product.price = price;
     if (status) product.status = status;
     if (category) product.category = category;
@@ -139,18 +227,27 @@ export const editProduct = async (req: Request, res: Response): Promise<void> =>
 
 /* -------------------------------------------------------
 🔍 Obter produto por ID
+Compatível com:
+- GET /products/:id
+- GET /products/get?id=...
 -------------------------------------------------------- */
 export const getProduct = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.query;
+    const idFromParams = req.params.id;
+    const idFromQuery = req.query.id;
+    const rawId = idFromParams || idFromQuery;
 
-    if (!id) {
-      res.status(400).json({ status: false, msg: "O parâmetro 'id' é obrigatório." });
+    if (!rawId || typeof rawId !== "string") {
+      res.status(400).json({ status: false, msg: "O ID do produto é obrigatório." });
       return;
     }
 
-    const query = mongoose.Types.ObjectId.isValid(id as string) ? { _id: id } : { id };
-    const product = await Product.findOne(query);
+    if (!mongoose.Types.ObjectId.isValid(rawId)) {
+      res.status(400).json({ status: false, msg: "ID do produto inválido." });
+      return;
+    }
+
+    const product = await Product.findById(rawId).lean();
 
     if (!product) {
       res.status(404).json({ status: false, msg: "Produto não encontrado." });

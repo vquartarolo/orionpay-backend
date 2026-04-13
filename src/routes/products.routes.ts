@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import {
+  listProducts,
   createProduct,
   deleteProduct,
   editProduct,
@@ -8,54 +9,52 @@ import {
 
 const router = Router();
 
-/*
-  Prefixo real no servidor:
-  /api/products
-*/
+/* -------------------------------------------------------
+📦 ROTAS DE PRODUTOS
+Prefixo base:
+- /products
+- /api/products
+-------------------------------------------------------- */
 
 /* =========================
-   NOVO PADRÃO REST (frontend novo)
+   PADRÃO NOVO (frontend novo)
 ========================= */
 
 /**
- * POST /api/products
- * Criar produto
+ * 📋 Listar produtos
+ * GET /products?page=1&limit=50
+ */
+router.get("/", async (req: Request, res: Response) => {
+  await listProducts(req, res);
+});
+
+/**
+ * 🆕 Criar produto
+ * POST /products
  */
 router.post("/", async (req: Request, res: Response) => {
   await createProduct(req, res);
 });
 
 /**
- * GET /api/products/:id
- * Buscar produto por ID
+ * 🔍 Buscar produto por ID
+ * GET /products/:id
  */
 router.get("/:id", async (req: Request, res: Response) => {
-  req.query.id = req.params.id;
   await getProduct(req, res);
 });
 
 /**
- * PATCH /api/products/:id
- * Editar produto por ID
- *
- * Observação:
- * seu controller atual edita por oldName/newName.
- * Então por enquanto mantemos compatibilidade recebendo o payload
- * do front e repassando junto. Se o front mandar por id, depois
- * ajustamos o controller para edição por id de forma completa.
+ * ✏️ Editar produto por ID
+ * PATCH /products/:id
  */
 router.patch("/:id", async (req: Request, res: Response) => {
   await editProduct(req, res);
 });
 
 /**
- * DELETE /api/products/:id
- * Deletar produto por ID
- *
- * Observação:
- * seu controller atual deleta por name.
- * Mantemos a rota pronta, mas se o front usar delete por id,
- * depois ajustamos o controller para deletar por _id.
+ * 🗑️ Deletar produto por ID
+ * DELETE /products/:id
  */
 router.delete("/:id", async (req: Request, res: Response) => {
   await deleteProduct(req, res);
@@ -66,28 +65,32 @@ router.delete("/:id", async (req: Request, res: Response) => {
 ========================= */
 
 /**
- * POST /api/products/create
+ * 🆕 Criar produto
+ * POST /products/create
  */
 router.post("/create", async (req: Request, res: Response) => {
   await createProduct(req, res);
 });
 
 /**
- * DELETE /api/products/delete
+ * 🗑️ Deletar produto
+ * DELETE /products/delete
  */
 router.delete("/delete", async (req: Request, res: Response) => {
   await deleteProduct(req, res);
 });
 
 /**
- * PATCH /api/products/edit
+ * ✏️ Editar produto
+ * PATCH /products/edit
  */
 router.patch("/edit", async (req: Request, res: Response) => {
   await editProduct(req, res);
 });
 
 /**
- * GET /api/products/get?id=...
+ * 🔍 Buscar produto
+ * GET /products/get?id=...
  */
 router.get("/get", async (req: Request, res: Response) => {
   await getProduct(req, res);
