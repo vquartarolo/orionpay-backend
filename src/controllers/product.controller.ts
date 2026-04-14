@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Product } from "../models/product.model";
+import { Checkout } from "../models/checkout.model";
 import { decodeToken } from "../config/auth";
 import { User } from "../models/user.model";
 
@@ -28,6 +29,40 @@ const normalizeProduct = (product: any) => {
     id: String(plain._id),
     ...plain,
   };
+};
+
+const attachCheckoutLinks = async (products: any[]) => {
+  if (!products.length) return [];
+
+  const productIds = products
+    .map((p) => p?._id || p?.id)
+    .filter(Boolean)
+    .map((id) => String(id));
+
+  const checkouts = await Checkout.find({
+    productId: { $in: productIds.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
+    .lean();
+
+  const latestByProduct = new Map<string, any>();
+  for (const checkout of checkouts) {
+    const key = String(checkout.productId);
+    if (!latestByProduct.has(key)) {
+      latestByProduct.set(key, checkout);
+    }
+  }
+
+  return products.map((product) => {
+    const normalized = normalizeProduct(product);
+    const linkedCheckout = latestByProduct.get(String(normalized._id || normalized.id));
+    return {
+      ...normalized,
+      checkoutId: linkedCheckout ? String(linkedCheckout._id) : null,
+      checkoutPublicId: linkedCheckout ? String(linkedCheckout._id) : null,
+      checkoutName: linkedCheckout?.name || null,
+    };
+  });
 };
 
 /* -------------------------------------------------------
@@ -73,7 +108,7 @@ export const listProducts = async (
       Product.countDocuments(filter),
     ]);
 
-    const items = rawItems.map((item: any) => normalizeProduct(item));
+    const items = await attachCheckoutLinks(rawItems);
 
     res.status(200).json({
       status: true,
@@ -141,7 +176,12 @@ export const createProduct = async (
     res.status(201).json({
       status: true,
       msg: "✅ Produto criado com sucesso.",
-      product: normalizeProduct(product),
+      product: {
+        ...normalizeProduct(product),
+        checkoutId: null,
+        checkoutPublicId: null,
+        checkoutName: null,
+      },
     });
   } catch (error) {
     console.error("❌ Erro em createProduct:", error);
@@ -281,10 +321,12 @@ export const editProduct = async (
 
     await product.save();
 
+    const [normalized] = await attachCheckoutLinks([product]);
+
     res.status(200).json({
       status: true,
       msg: "✅ Produto atualizado com sucesso.",
-      product: normalizeProduct(product),
+      product: normalized,
     });
   } catch (error) {
     console.error("❌ Erro em editProduct:", error);
@@ -333,9 +375,11 @@ export const getProduct = async (
       return;
     }
 
+    const [normalized] = await attachCheckoutLinks([product]);
+
     res.status(200).json({
       status: true,
-      product: normalizeProduct(product),
+      product: normalized,
     });
   } catch (error) {
     console.error("❌ Erro em getProduct:", error);

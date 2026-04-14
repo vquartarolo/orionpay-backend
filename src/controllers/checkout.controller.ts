@@ -102,20 +102,30 @@ export const createCheckout = async (req: Request, res: Response): Promise<void>
 
       const resolvedProductId = fromBody || fromConfig;
 
+      let linkedProduct: any = null;
+
       if (resolvedProductId) {
-        const product = await Product.findOne({
+        linkedProduct = await Product.findOne({
           _id: new mongoose.Types.ObjectId(resolvedProductId),
           userId: user._id,
         }).lean();
 
-        if (product) {
+        if (linkedProduct) {
           finalProductId = new mongoose.Types.ObjectId(resolvedProductId);
         }
       }
 
+      const normalizedName = typeof name === "string" ? name.trim() : "";
+      const shouldAutoname =
+        !normalizedName ||
+        normalizedName === "Novo Checkout" ||
+        normalizedName === "Checkout sem título";
+
       const checkout = new Checkout({
         userId: user._id,
-        name: name || "Novo Checkout",
+        name: shouldAutoname && linkedProduct
+          ? `Checkout - ${linkedProduct.name}`
+          : (normalizedName || "Novo Checkout"),
         productId: finalProductId,
         config: config || {
           theme: {},
@@ -266,6 +276,16 @@ export const updateCheckout = async (req: Request, res: Response): Promise<void>
 
         if (product) {
           updates.productId = new mongoose.Types.ObjectId(extractedProductId);
+
+          const currentName = typeof name === "string" ? name.trim() : "";
+          if (
+            !currentName ||
+            currentName === "Novo Checkout" ||
+            currentName === "Checkout sem título" ||
+            currentName.startsWith("Checkout - ")
+          ) {
+            updates.name = `Checkout - ${product.name}`;
+          }
         }
       } else {
         updates.productId = null;
