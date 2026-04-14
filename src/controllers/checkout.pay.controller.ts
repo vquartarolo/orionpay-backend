@@ -12,42 +12,70 @@ export const payCheckout = async (req: Request, res: Response): Promise<void> =>
     const { checkoutId } = req.body;
 
     if (!checkoutId) {
-      res.status(400).json({ status: false, msg: "checkoutId é obrigatório." });
+      res.status(400).json({
+        status: false,
+        msg: "checkoutId é obrigatório.",
+      });
       return;
     }
 
+    // 🔎 Busca checkout
     const checkout = await Checkout.findById(checkoutId).lean();
+
     if (!checkout) {
-      res.status(404).json({ status: false, msg: "Checkout não encontrado." });
+      res.status(404).json({
+        status: false,
+        msg: "Checkout não encontrado.",
+      });
       return;
     }
 
+    // 🔎 Busca produto
     const product = await Product.findById(checkout.productId).lean();
+
+    // 🔎 Busca vendedor
     const seller = await User.findById(checkout.userId).lean();
 
     if (!product || !seller) {
-      res.status(404).json({ status: false, msg: "Produto ou vendedor não encontrado." });
+      res.status(404).json({
+        status: false,
+        msg: "Produto ou vendedor não encontrado.",
+      });
       return;
     }
 
+    // 🔥 GARANTE QUE O PREÇO É NÚMERO
+    const amount = Number(product.price);
+
+    if (!amount || isNaN(amount)) {
+      res.status(400).json({
+        status: false,
+        msg: "Preço do produto inválido.",
+      });
+      return;
+    }
+
+    // 🔎 Wallet
     let wallet = await Wallet.findOne({ userId: seller._id });
 
     if (!wallet) {
       wallet = new Wallet({
         userId: seller._id,
-        balance: { available: 0, unAvailable: [] },
+        balance: {
+          available: 0,
+          unAvailable: [],
+        },
       });
     }
 
-    const amount = product.price;
-
-    const fixed = seller.split?.cashIn?.pix?.fixed ?? 0;
-    const percentage = seller.split?.cashIn?.pix?.percentage ?? 0;
+    // 💰 Taxas
+    const fixed = seller?.split?.cashIn?.pix?.fixed ?? 0;
+    const percentage = seller?.split?.cashIn?.pix?.percentage ?? 0;
 
     const tax = calculatePixTax(amount, fixed, percentage);
     const netAmount = round(amount - tax);
 
-    // 🔥 GERAR PIX FAKE
+    // 🔥 PIX FAKE
     const txid = uuidv4();
 
     const copyPaste = `00020126580014BR.GOV.BCB.PIX0136${txid}520400005303986540${amount.toFixed(
@@ -60,6 +88,7 @@ export const payCheckout = async (req: Request, res: Response): Promise<void> =>
 
     const expiration = new Date(Date.now() + 15 * 60 * 1000);
 
+    // 🧠 Cria transação
     const transaction = new Transaction({
       userId: seller._id,
       amount,
@@ -82,8 +111,8 @@ export const payCheckout = async (req: Request, res: Response): Promise<void> =>
         },
         products: [
           {
-            name: product.name,
-            price: product.price,
+            name: product.name || "Produto",
+            price: amount,
           },
         ],
       },
@@ -91,6 +120,7 @@ export const payCheckout = async (req: Request, res: Response): Promise<void> =>
 
     await transaction.save();
 
+    // ✅ RESPOSTA PADRÃO PRO FRONT
     res.status(201).json({
       status: true,
       msg: "PIX gerado com sucesso.",
@@ -109,7 +139,12 @@ export const payCheckout = async (req: Request, res: Response): Promise<void> =>
     return;
   } catch (error) {
     console.error("❌ Erro em payCheckout:", error);
-    res.status(500).json({ status: false, msg: "Erro ao gerar pagamento." });
+
+    res.status(500).json({
+      status: false,
+      msg: "Erro ao gerar pagamento.",
+    });
+
     return;
   }
 };
