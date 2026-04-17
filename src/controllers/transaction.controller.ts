@@ -1,6 +1,6 @@
 import express, { Request, Response } from "express";
-import axios from "axios";
 import crypto from "crypto";
+import { getCryptoProvider, detectCryptoProviderFromWebhook } from "../providers/crypto/crypto.factory";
 import { decodeToken } from "../config/auth";
 import { User } from "../models/user.model";
 import { Wallet } from "../models/wallet.model";
@@ -75,10 +75,9 @@ function getBaseUrlFromRequest(req: Request): string {
   return `${protocol}://${host}`;
 }
 
-function buildNowPaymentsWebhookUrl(req: Request): string {
+function buildWebhookUrl(req: Request): string {
   const envUrl =
-    process.env.NOWPAYMENTS_IPN_URL ||
-    process.env.NOWPAYMENTS_WEBHOOK_URL ||
+    process.env.WEBHOOK_URL ||
     process.env.APP_URL ||
     process.env.BACKEND_URL ||
     process.env.BACKEND_PUBLIC_URL ||
@@ -88,7 +87,7 @@ function buildNowPaymentsWebhookUrl(req: Request): string {
 
   if (envUrl) {
     if (/^https?:\/\//i.test(envUrl)) {
-      return envUrl.endsWith("/api/transactions/webhook") || envUrl.endsWith("/api/transaction/webhook")
+      return envUrl.endsWith("/api/transactions/webhook")
         ? envUrl
         : `${envUrl.replace(/\/$/, "")}/api/transactions/webhook`;
     }
@@ -100,124 +99,6 @@ function buildNowPaymentsWebhookUrl(req: Request): string {
   return baseUrl ? `${baseUrl}/api/transactions/webhook` : "";
 }
 
-function resolveNowPaymentsPayCurrency(input: {
-  payCurrency?: string;
-  currency?: string;
-  coin?: string;
-  network?: string;
-}): string {
-  const direct = String(input.payCurrency || input.currency || "").trim();
-  if (direct) {
-    return direct.toLowerCase();
-  }
-
-  const coin = String(input.coin || "").trim().toUpperCase();
-  const network = String(input.network || "").trim().toUpperCase().replace(/[-_\s]/g, "");
-
-  if (coin === "USDT" && network === "TRC20") return "usdttrc20";
-  if (coin === "USDT" && network === "ERC20") return "usdterc20";
-  if (coin === "USDT" && ["BEP20", "BSC"].includes(network)) return "usdtbsc";
-  if (coin === "BTC") return "btc";
-  if (coin === "ETH") return "eth";
-  if (coin === "USDC" && network === "TRC20") return "usdctrc20";
-  if (coin === "USDC" && network === "ERC20") return "usdc";
-  if (coin === "USDC" && ["BEP20", "BSC"].includes(network)) return "usdcbsc";
-
-  return "";
-}
-
-function normalizeNowPaymentsStatus(paymentStatus?: string): TransactionStatus {
-  const normalized = String(paymentStatus || "").toLowerCase().trim();
-
-  if (["finished", "confirmed"].includes(normalized)) {
-    return "approved";
-  }
-
-  if (["failed", "refunded"].includes(normalized)) {
-    return "failed";
-  }
-
-  if (normalized === "expired") {
-    return "expired";
-  }
-
-  if (normalized === "partially_paid") {
-    return "pending";
-  }
-
-  return "pending";
-}
-
-function parseNowPaymentsDate(value?: string | Date | null): Date | null {
-  if (!value) return null;
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function getNowPaymentsErrorMessage(error: unknown): string {
-  const maybeAxiosError = error as {
-    response?: {
-      data?: {
-        message?: string;
-        msg?: string;
-      };
-    };
-    message?: string;
-  };
-
-  return (
-    maybeAxiosError?.response?.data?.message ||
-    maybeAxiosError?.response?.data?.msg ||
-    maybeAxiosError?.message ||
-    (error instanceof Error ? error.message : "Erro ao comunicar com NOWPayments.")
-  );
-}
-
-function getHeaderValue(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return String(value[0] || "");
-  return String(value || "");
-}
-
-function stableSortObject(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stableSortObject);
-  }
-
-  if (value && typeof value === "object" && !(value instanceof Date)) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-      a.localeCompare(b)
-    );
-
-    return entries.reduce<Record<string, unknown>>((acc, [key, val]) => {
-      acc[key] = stableSortObject(val);
-      return acc;
-    }, {});
-  }
-
-  return value;
-}
-
-function buildNowPaymentsSignaturePayload(body: Record<string, unknown>): string {
-  return JSON.stringify(stableSortObject(body));
-}
-
-function verifyNowPaymentsSignature(req: WebhookRequest): boolean {
-  const ipnSecret = String(process.env.NOWPAYMENTS_IPN_SECRET || "").trim();
-  const receivedSignature = getHeaderValue(req.headers["x-nowpayments-sig"]).trim();
-
-  if (!ipnSecret || !receivedSignature || !req.body || typeof req.body !== "object") {
-    return false;
-  }
-
-  const payload = buildNowPaymentsSignaturePayload(req.body as Record<string, unknown>);
-  const expectedSignature = crypto.createHmac("sha512", ipnSecret).update(payload).digest("hex");
-
-  return crypto.timingSafeEqual(
-    Buffer.from(expectedSignature.toLowerCase(), "utf8"),
-    Buffer.from(receivedSignature.toLowerCase(), "utf8")
-  );
-}
 
 async function cancelExpiredPendingTransactions(userId?: string) {
   const now = new Date();
@@ -661,7 +542,7 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
 };
 
 /* -------------------------------------------------------
-🟣 3. Criar cobrança CRIPTO REAL (NOWPayments)
+🟣 3. Criar cobrança CRIPTO REAL
 -------------------------------------------------------- */
 export const createCryptoTransaction = async (req: Request, res: Response): Promise<void> => {
   let transaction: InstanceType<typeof Transaction> | null = null;
@@ -679,31 +560,27 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
       return;
     }
 
-    const apiKey = process.env.NOWPAYMENTS_API_KEY;
-    if (!apiKey) {
-      res.status(500).json({ status: false, msg: "NOWPAYMENTS_API_KEY não configurada." });
-      return;
-    }
-
     const rawAmount = req.body.amount ?? req.body.value ?? req.body.amountBRL;
     const amount = Number(rawAmount);
     const description = req.body.description || req.body.desc || "Cobrança em cripto";
-    const payCurrency = resolveNowPaymentsPayCurrency({
-      payCurrency: req.body.payCurrency,
-      currency: req.body.currency,
-      coin: req.body.coin,
-      network: req.body.network,
-    });
 
     if (!amount || amount <= 0) {
       res.status(400).json({ status: false, msg: "Valor da cobrança inválido." });
       return;
     }
 
+    const provider = getCryptoProvider(user);
+    const payCurrency = provider.resolveCurrency({
+      payCurrency: req.body.payCurrency,
+      currency: req.body.currency,
+      coin: req.body.coin,
+      network: req.body.network,
+    });
+
     if (!payCurrency) {
       res.status(400).json({
         status: false,
-        msg: "Moeda/rede inválida para NOWPayments. Envie payCurrency ou coin + network válidos.",
+        msg: "Moeda/rede inválida. Envie payCurrency ou coin + network válidos.",
       });
       return;
     }
@@ -724,8 +601,8 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
       retention: 0,
       method: "crypto",
       status: "pending",
-      externalReference: generateExternalReference("NP"),
-      provider: "nowpayments",
+      externalReference: generateExternalReference("CRYPTO"),
+      provider: provider.providerName as any,
       providerId: "",
       providerStatus: "waiting",
       description,
@@ -752,68 +629,38 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
 
     await transaction.save();
 
-    const webhookUrl = buildNowPaymentsWebhookUrl(req);
+    const charge = await provider.createCharge({
+      amount,
+      payCurrency,
+      description,
+      orderId: transaction.externalReference,
+      webhookUrl: buildWebhookUrl(req) || undefined,
+    });
 
-    const payload: Record<string, unknown> = {
-      price_amount: amount,
-      price_currency: "brl",
-      pay_currency: payCurrency,
-      order_id: transaction.externalReference,
-      order_description: description,
-    };
-
-    if (webhookUrl) {
-      payload.ipn_callback_url = webhookUrl;
-    }
-
-    const { data } = await axios.post<Record<string, unknown>>(
-      "https://api.nowpayments.io/v1/payment",
-      payload,
-      {
-        headers: {
-          "x-api-key": apiKey,
-          "Content-Type": "application/json",
-        },
-        timeout: 30000,
-      }
-    );
-
-    const paymentId = String(data.payment_id || "");
-    const paymentStatus = String(data.payment_status || "waiting");
-    const payAddress = String(data.pay_address || "");
-    const network = String(data.network || req.body.network || "");
-    const payAmount = Number(data.pay_amount || 0);
-    const priceAmount = Number(data.price_amount || amount);
-    const priceCurrency = String(data.price_currency || "brl");
-    const expiresAt =
-      parseNowPaymentsDate((data as Record<string, unknown>).expiration_estimate_date as string | undefined) ||
-      parseNowPaymentsDate((data as Record<string, unknown>).payin_expiration as string | undefined) ||
-      new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    transaction.externalId = paymentId;
-    transaction.providerId = paymentId;
-    transaction.providerStatus = paymentStatus;
-    transaction.expiresAt = expiresAt;
+    transaction.externalId = charge.paymentId;
+    transaction.providerId = charge.paymentId;
+    transaction.providerStatus = charge.paymentStatus;
+    transaction.expiresAt = charge.expiresAt;
     transaction.crypto = {
       ...(transaction.crypto || {}),
-      paymentId,
-      paymentStatus,
-      payAddress,
-      payAmount,
-      payCurrency: String(data.pay_currency || payCurrency),
-      priceAmount,
-      priceCurrency,
-      network,
-      orderId: String(data.order_id || transaction.externalReference),
-      orderDescription: String(data.order_description || description),
-      purchaseId: String(data.purchase_id || ""),
-      payinExtraId: String(data.payin_extra_id || ""),
-      actuallyPaid: Number(data.actually_paid || 0),
-      actuallyPaidAtFiat: Number(data.actually_paid_at_fiat || 0),
-      outcomeAmount: Number(data.outcome_amount || 0),
-      outcomeCurrency: String(data.outcome_currency || ""),
-      expiresAt,
-      txHash: String(data.payin_hash || data.tx_hash || ""),
+      paymentId: charge.paymentId,
+      paymentStatus: charge.paymentStatus,
+      payAddress: charge.payAddress,
+      payAmount: charge.payAmount,
+      payCurrency: charge.payCurrency,
+      priceAmount: charge.priceAmount,
+      priceCurrency: charge.priceCurrency,
+      network: charge.network,
+      orderId: charge.orderId,
+      orderDescription: description,
+      purchaseId: charge.purchaseId,
+      payinExtraId: charge.payinExtraId,
+      actuallyPaid: 0,
+      actuallyPaidAtFiat: 0,
+      outcomeAmount: 0,
+      outcomeCurrency: "",
+      expiresAt: charge.expiresAt,
+      txHash: charge.txHash,
     };
 
     await transaction.save();
@@ -840,14 +687,14 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
         crypto: transaction.crypto,
       },
       charge: {
-        paymentId,
-        address: payAddress,
-        amountCrypto: payAmount,
-        amountBRL: priceAmount,
-        payCurrency: String(data.pay_currency || payCurrency),
-        priceCurrency,
-        network,
-        qrCodeText: payAddress,
+        paymentId: charge.paymentId,
+        address: charge.payAddress,
+        amountCrypto: charge.payAmount,
+        amountBRL: charge.priceAmount,
+        payCurrency: charge.payCurrency,
+        priceCurrency: charge.priceCurrency,
+        network: charge.network,
+        qrCodeText: charge.payAddress,
       },
     });
   } catch (error) {
@@ -860,9 +707,20 @@ export const createCryptoTransaction = async (req: Request, res: Response): Prom
       "❌ Erro em createCryptoTransaction:",
       maybeAxiosError?.response?.data || maybeAxiosError?.message || error
     );
+
+    if (error instanceof Error && error.message === "NOWPAYMENTS_API_KEY_NOT_CONFIGURED") {
+      res.status(500).json({ status: false, msg: "NOWPAYMENTS_API_KEY não configurada." });
+      return;
+    }
+
+    const errData = maybeAxiosError?.response?.data as Record<string, unknown> | undefined;
     res.status(500).json({
       status: false,
-      msg: getNowPaymentsErrorMessage(error),
+      msg:
+        (errData?.message as string) ||
+        (errData?.msg as string) ||
+        maybeAxiosError?.message ||
+        "Erro ao comunicar com o provider cripto.",
     });
   }
 };
@@ -991,46 +849,35 @@ export const consultTransactionByID = async (req: Request, res: Response): Promi
 -------------------------------------------------------- */
 export const webhookTransaction = async (req: WebhookRequest, res: Response): Promise<void> => {
   try {
-    const isNowPaymentsWebhook = Boolean(req.body?.payment_id || req.body?.payment_status);
+    const cryptoProvider = detectCryptoProviderFromWebhook(req.body as Record<string, unknown>);
 
-    if (isNowPaymentsWebhook) {
+    if (cryptoProvider) {
       const ipnSecret = String(process.env.NOWPAYMENTS_IPN_SECRET || "").trim();
-
       if (!ipnSecret) {
-        res.status(500).json({
-          status: false,
-          msg: "NOWPAYMENTS_IPN_SECRET não configurada.",
-        });
+        res.status(500).json({ status: false, msg: "Webhook secret não configurado." });
         return;
       }
 
-      const isValidSignature = verifyNowPaymentsSignature(req);
-
-      if (!isValidSignature) {
-        console.warn("❌ Assinatura NOWPayments inválida.");
+      if (!cryptoProvider.verifyWebhook(req)) {
+        console.warn("❌ Assinatura do webhook cripto inválida.");
         res.status(401).json({ status: false, msg: "Assinatura do webhook inválida." });
         return;
       }
 
-      const paymentId = String(req.body.payment_id || "").trim();
-      const paymentStatus = String(req.body.payment_status || "").trim().toLowerCase();
-      const orderId = String(req.body.order_id || "").trim();
+      const event = cryptoProvider.parseWebhook(req.body as Record<string, unknown>);
 
-      if (!paymentId || !paymentStatus) {
+      if (!event.paymentId || !event.providerStatus) {
         res.status(400).json({ status: false, msg: "payment_id e payment_status são obrigatórios." });
         return;
       }
 
       const transaction = await Transaction.findOne({
         $or: [
-          { externalId: paymentId },
-          { providerId: paymentId },
-          { "crypto.paymentId": paymentId },
-          ...(orderId
-            ? [
-                { externalReference: orderId },
-                { "crypto.orderId": orderId },
-              ]
+          { externalId: event.paymentId },
+          { providerId: event.paymentId },
+          { "crypto.paymentId": event.paymentId },
+          ...(event.orderId
+            ? [{ externalReference: event.orderId }, { "crypto.orderId": event.orderId }]
             : []),
         ],
       });
@@ -1040,74 +887,45 @@ export const webhookTransaction = async (req: WebhookRequest, res: Response): Pr
         return;
       }
 
-      const mappedStatus = normalizeNowPaymentsStatus(paymentStatus);
-      const expiresAt =
-        parseNowPaymentsDate(req.body.expiration_estimate_date) ||
-        parseNowPaymentsDate(req.body.payin_expiration) ||
-        transaction.expiresAt ||
-        null;
-
-      transaction.provider = "nowpayments";
-      transaction.externalId = paymentId;
-      transaction.providerId = paymentId;
-      transaction.providerStatus = paymentStatus;
-      transaction.expiresAt = expiresAt;
+      transaction.provider = cryptoProvider.providerName as any;
+      transaction.externalId = event.paymentId;
+      transaction.providerId = event.paymentId;
+      transaction.providerStatus = event.providerStatus;
+      if (event.expiresAt) transaction.expiresAt = event.expiresAt;
       transaction.crypto = {
         ...(transaction.crypto || {}),
-        paymentId,
-        paymentStatus,
-        payAddress: String(req.body.pay_address || transaction.crypto?.payAddress || ""),
-        payAmount: Number(req.body.pay_amount || transaction.crypto?.payAmount || 0),
-        payCurrency: String(req.body.pay_currency || transaction.crypto?.payCurrency || ""),
-        priceAmount: Number(
-          req.body.price_amount || transaction.crypto?.priceAmount || transaction.amount || 0
-        ),
-        priceCurrency: String(req.body.price_currency || transaction.crypto?.priceCurrency || "brl"),
-        network: String(req.body.network || transaction.crypto?.network || ""),
-        orderId: String(req.body.order_id || transaction.crypto?.orderId || transaction.externalReference),
-        orderDescription: String(
-          req.body.order_description ||
-            transaction.crypto?.orderDescription ||
-            transaction.description ||
-            ""
-        ),
-        purchaseId: String(req.body.purchase_id || transaction.crypto?.purchaseId || ""),
-        payinExtraId: String(req.body.payin_extra_id || transaction.crypto?.payinExtraId || ""),
-        actuallyPaid: Number(req.body.actually_paid || transaction.crypto?.actuallyPaid || 0),
-        actuallyPaidAtFiat: Number(
-          req.body.actually_paid_at_fiat || transaction.crypto?.actuallyPaidAtFiat || 0
-        ),
-        outcomeAmount: Number(req.body.outcome_amount || transaction.crypto?.outcomeAmount || 0),
-        outcomeCurrency: String(req.body.outcome_currency || transaction.crypto?.outcomeCurrency || ""),
-        expiresAt,
-        txHash: String(req.body.payin_hash || req.body.tx_hash || transaction.crypto?.txHash || ""),
+        paymentId: event.paymentId,
+        paymentStatus: event.providerStatus,
+        payAddress: event.payAddress || transaction.crypto?.payAddress || "",
+        payAmount: event.payAmount || transaction.crypto?.payAmount || 0,
+        payCurrency: event.payCurrency || transaction.crypto?.payCurrency || "",
+        priceAmount: event.priceAmount || transaction.crypto?.priceAmount || transaction.amount || 0,
+        priceCurrency: event.priceCurrency || transaction.crypto?.priceCurrency || "brl",
+        network: event.network || transaction.crypto?.network || "",
+        orderId: event.orderId || transaction.crypto?.orderId || transaction.externalReference,
+        orderDescription: transaction.crypto?.orderDescription || transaction.description || "",
+        purchaseId: event.purchaseId || transaction.crypto?.purchaseId || "",
+        payinExtraId: event.payinExtraId || transaction.crypto?.payinExtraId || "",
+        actuallyPaid: event.actuallyPaid || transaction.crypto?.actuallyPaid || 0,
+        actuallyPaidAtFiat: event.actuallyPaidAtFiat || transaction.crypto?.actuallyPaidAtFiat || 0,
+        outcomeAmount: event.outcomeAmount || transaction.crypto?.outcomeAmount || 0,
+        outcomeCurrency: event.outcomeCurrency || transaction.crypto?.outcomeCurrency || "",
+        expiresAt: event.expiresAt || transaction.crypto?.expiresAt || null,
+        txHash: event.txHash || transaction.crypto?.txHash || "",
       };
 
-      if (mappedStatus === "approved") {
+      if (event.normalizedStatus === "approved") {
         await transaction.save();
-
         const result = await creditWalletAfterChargeApproval(transaction._id.toString(), req);
-
-        res.status(result.code).json({
-          status: result.ok,
-          msg: result.msg,
-          transaction: result.transaction,
-        });
+        res.status(result.code).json({ status: result.ok, msg: result.msg, transaction: result.transaction });
         return;
       }
 
-      transaction.status = mappedStatus;
+      transaction.status = event.normalizedStatus;
       await transaction.save();
 
-      console.log(
-        `ℹ️ Webhook NOWPayments processado: tx=${transaction._id} paymentId=${paymentId} status=${paymentStatus}`
-      );
-
-      res.status(200).json({
-        status: true,
-        msg: "✅ Webhook NOWPayments processado com sucesso.",
-        transaction,
-      });
+      console.log(`ℹ️ Webhook cripto processado: tx=${transaction._id} paymentId=${event.paymentId} status=${event.providerStatus}`);
+      res.status(200).json({ status: true, msg: "✅ Webhook cripto processado com sucesso.", transaction });
       return;
     }
 

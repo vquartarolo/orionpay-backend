@@ -18,7 +18,8 @@ export type TransactionProvider =
   | "internal"
   | "cartwave"
   | "zendry"
-  | "nowpayments";
+  | "nowpayments"
+  | "7trust";
 
 export interface ITransaction extends Document {
   _id: Types.ObjectId;
@@ -188,7 +189,7 @@ const transactionSchema = new Schema<ITransaction>(
 
     provider: {
       type: String,
-      enum: ["internal", "cartwave", "zendry", "nowpayments"],
+      enum: ["internal", "cartwave", "zendry", "nowpayments", "7trust"],
       required: true,
       default: "internal",
       index: true,
