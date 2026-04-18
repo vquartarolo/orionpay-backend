@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(npx tsc *)",
-      "WebFetch(domain:cartwavehub.com.br)"
+      "WebFetch(domain:cartwavehub.com.br)",
+      "WebFetch(domain:cartwave-prod.readme.io)"
     ]
   }
 }

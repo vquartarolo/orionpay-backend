@@ -1,4 +1,5 @@
 import axios from "axios";
+import crypto from "crypto";
 import type { Request } from "express";
 import type {
   PixProvider,
@@ -8,34 +9,150 @@ import type {
 } from "../provider.types";
 
 const BASE_URL = "https://api.cartwavehub.com.br";
+const AUTH_URL = `${BASE_URL}/v2/finance/auth-token/`;
+const CREATE_PIX_URL = `${BASE_URL}/v2/finance/create-pix-copy-and-paste/`;
+const STATUS_PIX_URL = `${BASE_URL}/v2/finance/status-pix-copy-and-paste/`;
 
-function buildHeaders(): Record<string, string> {
-  const token = process.env.CARTWAVE_TOKEN ?? "";
+// ── Token cache (validade: 60 min, renova com 2 min de margem) ────────────────
+let _cachedToken: string | null = null;
+let _tokenExpiresAt = 0;
 
-  if (!token) {
-    throw new Error("CARTWAVE_TOKEN é obrigatório.");
+async function getAccessToken(): Promise<string> {
+  const now = Date.now();
+
+  if (_cachedToken && now < _tokenExpiresAt - 2 * 60 * 1000) {
+    return _cachedToken;
   }
 
-  return {
-    "Content-Type": "application/json",
-    Accept: "application/json, text/plain, */*",
-    Authorization: `Bearer ${token}`,
-    Origin: "https://web.cartwavehub.com.br",
-    Referer: "https://web.cartwavehub.com.br/",
-  };
+  const email = process.env.CARTWAVE_API_EMAIL ?? "";
+  const password = process.env.CARTWAVE_API_PASSWORD ?? "";
+
+  if (!email || !password) {
+    throw new Error(
+      "CARTWAVE_API_EMAIL e CARTWAVE_API_PASSWORD são obrigatórios no .env."
+    );
+  }
+
+  console.log("🔑 [CartWaveHub] Obtendo access token via /v2/finance/auth-token/");
+
+  let authRes;
+  try {
+    authRes = await axios.post(
+      AUTH_URL,
+      { email, password },
+      { headers: { "Content-Type": "application/json" } }
+    );
+  } catch (err: any) {
+    const res = err?.response;
+    console.error("❌ [CartWaveHub] ERRO AUTH ─────────────────────────");
+    console.error("  Status :", res?.status ?? "sem resposta");
+    console.error("  Body   :", JSON.stringify(res?.data ?? err?.message, null, 2));
+    console.error("────────────────────────────────────────────────────");
+    throw new Error(
+      `CartWaveHub auth falhou (${res?.status ?? "sem resposta"}): ` +
+        JSON.stringify(res?.data ?? err?.message)
+    );
+  }
+
+  const authData = authRes.data as Record<string, unknown>;
+  const token = String(
+    authData?.access_token ??
+      authData?.token ??
+      authData?.accessToken ??
+      authData?.jwt ??
+      ""
+  );
+
+  if (!token) {
+    console.error(
+      "❌ [CartWaveHub] Resposta de auth sem token:",
+      JSON.stringify(authData)
+    );
+    throw new Error(
+      "CartWaveHub auth não retornou token. Resposta: " + JSON.stringify(authData)
+    );
+  }
+
+  _cachedToken = token;
+  _tokenExpiresAt = now + 60 * 60 * 1000;
+
+  console.log("✅ [CartWaveHub] Token obtido. Válido por 60 min.");
+  return token;
 }
 
+// ── HMAC-SHA512 (doc oficial) ─────────────────────────────────────────────────
+// Input: body serializado sem espaços após ':' e ','
+// Chave: CARTWAVE_HMAC_SECRET (registrada com CartWave via email)
+// Output: hex
+function buildHmac(body: Record<string, unknown>): string {
+  const secret = process.env.CARTWAVE_API_HMAC ?? "";
+
+  if (!secret) {
+    throw new Error("CARTWAVE_API_HMAC é obrigatório no .env.");
+  }
+
+  const compact = JSON.stringify(body)
+    .replace(/:\s/g, ":")
+    .replace(/,\s/g, ",");
+
+  return crypto.createHmac("sha512", secret).update(compact).digest("hex");
+}
+
+// ── Status normalization ──────────────────────────────────────────────────────
+// Statuses oficiais do Cash-In: NEW, PAID, CANCELED
+// Event types oficiais: QR_CODE_COPY_AND_PASTE_PAID, etc.
 function normalizeStatus(
   status: string
 ): "approved" | "pending" | "failed" | "expired" {
-  const s = String(status || "").toLowerCase();
-  if (["paid", "approved", "completed", "confirmed", "concluido", "pago"].includes(s))
+  const s = String(status || "").toUpperCase();
+
+  if (
+    [
+      "PAID",
+      "APPROVED",
+      "COMPLETED",
+      "CONFIRMED",
+      "QR_CODE_COPY_AND_PASTE_PAID",
+      "PIX_CASHIN_RECEIVED",
+    ].includes(s)
+  )
     return "approved";
-  if (["expired", "overdue", "vencido", "expirado"].includes(s)) return "expired";
-  if (["failed", "rejected", "cancelled", "canceled", "falhou", "cancelado"].includes(s))
+
+  if (
+    ["EXPIRED", "OVERDUE", "VENCIDO", "EXPIRADO"].includes(s)
+  )
+    return "expired";
+
+  if (
+    [
+      "FAILED",
+      "REJECTED",
+      "CANCELLED",
+      "CANCELED",
+      "QR_CODE_COPY_AND_PASTE_REFUNDED",
+      "QR_CODE_COPY_AND_PASTE_REFUNDED_ERROR",
+      "PIX_CASHOUT_ERROR",
+      "PIX_CASHOUT_CANCELED",
+    ].includes(s)
+  )
     return "failed";
+
   return "pending";
 }
+
+// ── Eventos oficiais suportados ───────────────────────────────────────────────
+export const CARTWAVE_EVENT_TYPES = new Set([
+  "QR_CODE_COPY_AND_PASTE_CREATED",
+  "QR_CODE_COPY_AND_PASTE_PAID",
+  "QR_CODE_COPY_AND_PASTE_REFUNDED",
+  "QR_CODE_COPY_AND_PASTE_REFUNDED_ERROR",
+  "PIX_CASHIN_RECEIVED",
+  "PIX_CASHOUT_CREATED",
+  "PIX_CASHOUT_SUCCESS",
+  "PIX_CASHOUT_ERROR",
+  "PIX_CASHOUT_REFUND",
+  "PIX_CASHOUT_CANCELED",
+]);
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
@@ -49,87 +166,92 @@ export const CartWaveHubProvider: PixProvider = {
     const expirationDate = new Date(dueDate.getTime() + 48 * 60 * 60 * 1000);
 
     const docRaw = params.customer?.document?.replace(/\D/g, "") ?? "00000000000";
+    const debitorName = (params.customer?.name || "Cliente").slice(0, 25);
 
+    // Payload conforme documentação oficial
     const body: Record<string, unknown> = {
-      account_mirror: true,
       amount: params.amount,
-      debtor_document: docRaw,
-      debtor_name: params.customer?.name || "Cliente",
+      type_fine: "NONE",
+      fine: 0,
       due_date: dueDate.toISOString(),
       expiration_date: expirationDate.toISOString(),
-      fine: 0,
       fine_date: fineDate.toISOString(),
-      source_account_branch_identifier: "0001",
-      source_account_number: process.env.CARTWAVE_ACCOUNT_NUMBER ?? "7003093",
+      source_account_branch_identifier: process.env.CARTWAVE_BRANCH ?? "0001",
+      source_account_number: process.env.CARTWAVE_ACCOUNT_NUMBER ?? "",
       type_document: docRaw.length === 14 ? "CNPJ" : "CPF",
-      type_fine: "NONE",
+      debtor_document: docRaw,
+      debtor_name: debitorName,
+      tag: params.orderId,
+      base_64_image: false,
     };
 
-    const headers = buildHeaders();
-    const endpoint = `${BASE_URL}/finance/create-pix-copy-and-paste-web/`;
+    // 1. Obter token via client credentials
+    let token: string;
+    try {
+      token = await getAccessToken();
+    } catch (authErr: any) {
+      console.error("❌ [CartWaveHub] Falha na autenticação:", authErr.message);
+      throw authErr;
+    }
 
-    // ── DEBUG ──────────────────────────────────────────────────────────────────
-    const rawToken = process.env.CARTWAVE_TOKEN ?? "";
-    const tokenPreview = rawToken
-      ? `${rawToken.slice(0, 6)}...${rawToken.slice(-4)} (len=${rawToken.length})`
-      : "AUSENTE";
-    const authHeader = headers["Authorization"] ?? "";
-    const authPreview = authHeader.startsWith("Bearer ")
-      ? `Bearer ${authHeader.slice(7, 13)}...${authHeader.slice(-4)}`
-      : `FORMATO INVÁLIDO: "${authHeader.slice(0, 20)}"`;
+    // 2. Gerar HMAC-SHA512 do body
+    let hmac: string;
+    try {
+      hmac = buildHmac(body);
+    } catch (hmacErr: any) {
+      console.error("❌ [CartWaveHub] Falha no HMAC:", hmacErr.message);
+      throw hmacErr;
+    }
 
-    console.log("🔍 [CartWaveHub] REQUEST ─────────────────────────");
-    console.log("  URL    :", endpoint);
-    console.log("  Method : POST");
-    console.log("  Token  :", tokenPreview);
-    console.log("  Auth   :", authPreview);
-    console.log("  Headers:", JSON.stringify({
-      ...headers,
-      Authorization: authPreview,
-    }, null, 2));
-    console.log("  Payload:", JSON.stringify(body, null, 2));
-    console.log("──────────────────────────────────────────────────");
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      hmac,
+    };
+
+    console.log("🔍 [CartWaveHub] REQUEST PIX ──────────────────────────────");
+    console.log("  URL     :", CREATE_PIX_URL);
+    console.log("  Method  : POST");
+    console.log("  Auth    : Bearer ***...", token.slice(-6));
+    console.log("  HMAC    :", hmac.slice(0, 20) + "...");
+    console.log("  Payload :", JSON.stringify(body, null, 2));
+    console.log("──────────────────────────────────────────────────────────");
 
     let response;
     try {
-      response = await axios.post(endpoint, body, { headers });
+      response = await axios.post(CREATE_PIX_URL, body, { headers });
     } catch (err: any) {
       const res = err?.response;
-      console.log("❌ [CartWaveHub] ERRO NA RESPOSTA ────────────────");
-      console.log("  Status :", res?.status ?? "sem resposta");
-      console.log("  Headers:", JSON.stringify(res?.headers ?? {}, null, 2));
-      console.log("  Body   :", JSON.stringify(res?.data ?? err?.message, null, 2));
-      console.log("──────────────────────────────────────────────────");
+      console.error("❌ [CartWaveHub] ERRO NA RESPOSTA ─────────────────────");
+      console.error("  Status :", res?.status ?? "sem resposta");
+      console.error("  Body   :", JSON.stringify(res?.data ?? err?.message, null, 2));
+      console.error("──────────────────────────────────────────────────────");
+
+      // Token inválido → invalida cache para forçar re-auth na próxima tentativa
+      if (res?.status === 401) {
+        _cachedToken = null;
+        _tokenExpiresAt = 0;
+      }
+
       throw err;
     }
 
-    console.log("✅ [CartWaveHub] RESPOSTA ────────────────────────");
+    console.log("✅ [CartWaveHub] RESPOSTA PIX ─────────────────────────────");
     console.log("  Status :", response.status);
     console.log("  Body   :", JSON.stringify(response.data, null, 2));
-    console.log("──────────────────────────────────────────────────");
+    console.log("──────────────────────────────────────────────────────────");
 
     const data = response.data as Record<string, unknown>;
 
-    const qrCodeText = String(
-      data?.copy_paste ??
-        data?.pix_copy_paste ??
-        data?.payload ??
-        data?.qrCode ??
-        data?.qr_code ??
-        ""
-    );
+    // Campo oficial: pix_copy_and_paste
+    const qrCodeText = String(data?.pix_copy_and_paste ?? "");
 
-    const txid = String(
-      data?.id ??
-        data?._id ??
-        data?.txid ??
-        data?.transaction_id ??
-        params.orderId
-    );
+    // ID oficial: qr_code_id (numérico). Fallback para tx_id como string de conciliação.
+    const txid = String(data?.qr_code_id ?? data?.tx_id ?? params.orderId);
 
     if (!qrCodeText) {
       throw new Error(
-        "CartWaveHub não retornou o código PIX. Resposta: " +
+        "CartWaveHub não retornou pix_copy_and_paste. Resposta: " +
           JSON.stringify(data)
       );
     }
@@ -137,25 +259,39 @@ export const CartWaveHubProvider: PixProvider = {
     return { txid, qrCodeText, expiresAt: dueDate };
   },
 
-  // CartWaveHub envia webhook sem assinatura conhecida — aceita qualquer request
-  // vinda de IP confiável. Ajuste aqui quando tiver documentação de webhook.
-  verifyWebhook(_req: Request): boolean {
+  verifyWebhook(req: Request): boolean {
+    // CartWaveHub não publica validação HMAC de webhook na documentação.
+    // O registro da URL é feito manualmente no portal web.
+    // Log completo para auditoria — revisar quando CartWave documentar assinatura.
+    console.log("📩 [CartWaveHub] Webhook recebido:");
+    console.log("  Headers:", JSON.stringify(req.headers));
+    console.log("  Body   :", JSON.stringify(req.body));
     return true;
   },
 
   parseWebhook(body: Record<string, unknown>): PixWebhookEvent {
+    // Formato oficial: { "type": "EVENT_TYPE", "data": { ...campos... } }
+    const eventType = String(body?.type ?? "").toUpperCase();
+    const data = (body?.data ?? body) as Record<string, unknown>;
+
+    // qr_code_id é o identificador primário do cash-in
     const txid = String(
-      body?.txid ??
-        body?.id ??
-        body?._id ??
-        body?.transaction_id ??
-        body?.external_reference ??
+      data?.qr_code_id ??
+        data?.id ??
+        data?.txid ??
+        data?.transaction_id ??
+        data?.external_reference ??
         ""
     );
 
-    const providerStatus = String(
-      body?.status ?? body?.payment_status ?? body?.situacao ?? "pending"
-    );
+    // O status vem do eventType (ex: QR_CODE_COPY_AND_PASTE_PAID) ou do campo status
+    const providerStatus = eventType || String(data?.status ?? "pending");
+
+    console.log("📩 [CartWaveHub] Webhook parseado:");
+    console.log("  type   :", eventType);
+    console.log("  txid   :", txid);
+    console.log("  status :", providerStatus);
+    console.log("  data   :", JSON.stringify(data, null, 2));
 
     return {
       txid,
@@ -164,3 +300,21 @@ export const CartWaveHubProvider: PixProvider = {
     };
   },
 };
+
+// ── Utilitário: consulta status por qr_code_id ────────────────────────────────
+// Endpoint oficial: GET /v2/finance/status-pix-copy-and-paste/?id=<qr_code_id>
+export async function queryPixStatusById(
+  qrCodeId: string
+): Promise<Record<string, unknown>> {
+  const token = await getAccessToken();
+  const url = `${STATUS_PIX_URL}?id=${qrCodeId}`;
+
+  console.log("🔍 [CartWaveHub] Status query:", url);
+
+  const { data } = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  console.log("✅ [CartWaveHub] Status response:", JSON.stringify(data, null, 2));
+  return data as Record<string, unknown>;
+}
