@@ -33,26 +33,40 @@ async function getAccessToken(): Promise<string> {
     );
   }
 
-  console.log("🔑 [CartWaveHub] Obtendo access token via /v2/finance/auth-token/");
+  const env = process.env.RAILWAY_ENVIRONMENT ?? process.env.NODE_ENV ?? "local";
+  const authBody = { email, password };
+
+  console.log("🔑 [CartWaveHub] ── AUTH REQUEST ──────────────────────────────");
+  console.log("  Ambiente :", env);
+  console.log("  URL      :", AUTH_URL);
+  console.log("  Body     :", JSON.stringify({ email, password: "***" }));
+  console.log("──────────────────────────────────────────────────────────────");
 
   let authRes;
   try {
-    authRes = await axios.post(
-      AUTH_URL,
-      { email, password },
-      { headers: { "Content-Type": "application/json" } }
-    );
+    authRes = await axios.post(AUTH_URL, authBody, {
+      headers: { "Content-Type": "application/json" },
+    });
   } catch (err: any) {
     const res = err?.response;
-    console.error("❌ [CartWaveHub] ERRO AUTH ─────────────────────────");
-    console.error("  Status :", res?.status ?? "sem resposta");
-    console.error("  Body   :", JSON.stringify(res?.data ?? err?.message, null, 2));
-    console.error("────────────────────────────────────────────────────");
+    console.error("❌ [CartWaveHub] ── AUTH ERRO ──────────────────────────────");
+    console.error("  Ambiente :", env);
+    console.error("  URL      :", AUTH_URL);
+    console.error("  Status   :", res?.status ?? "sem resposta (rede/timeout)");
+    console.error("  Headers  :", JSON.stringify(res?.headers ?? {}));
+    console.error("  Body     :", JSON.stringify(res?.data ?? err?.message, null, 2));
+    console.error("────────────────────────────────────────────────────────────");
     throw new Error(
       `CartWaveHub auth falhou (${res?.status ?? "sem resposta"}): ` +
         JSON.stringify(res?.data ?? err?.message)
     );
   }
+
+  console.log("✅ [CartWaveHub] ── AUTH RESPOSTA ─────────────────────────────");
+  console.log("  Status   :", authRes.status);
+  console.log("  Headers  :", JSON.stringify(authRes.headers));
+  console.log("  Body     :", JSON.stringify(authRes.data, null, 2));
+  console.log("────────────────────────────────────────────────────────────");
 
   const authData = authRes.data as Record<string, unknown>;
   const token = String(
@@ -65,7 +79,7 @@ async function getAccessToken(): Promise<string> {
 
   if (!token) {
     console.error(
-      "❌ [CartWaveHub] Resposta de auth sem token:",
+      "❌ [CartWaveHub] Auth OK mas sem token nos campos conhecidos:",
       JSON.stringify(authData)
     );
     throw new Error(
