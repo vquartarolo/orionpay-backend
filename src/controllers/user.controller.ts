@@ -906,6 +906,13 @@ export const createAdminUser = async (
       },
     });
 
+    await Wallet.create({
+      userId: admin._id,
+      defaultAddress: "",
+      balance: { available: 0, unAvailable: [] },
+      log: [],
+    });
+
     res.status(201).json({
       status: true,
       msg: "Usuário administrador criado com sucesso.",
