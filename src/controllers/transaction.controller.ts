@@ -1,6 +1,7 @@
 import express, { Request, Response } from "express";
 import crypto from "crypto";
 import { getCryptoProvider, detectCryptoProviderFromWebhook } from "../providers/crypto/crypto.factory";
+import { getPixProvider, detectPixProviderFromWebhook } from "../providers/pix/pix.factory";
 import { decodeToken } from "../config/auth";
 import { User } from "../models/user.model";
 import { Wallet } from "../models/wallet.model";
@@ -428,6 +429,8 @@ export const createTransaction = async (req: Request, res: Response): Promise<vo
 🟢 2. Criar cobrança PIX
 -------------------------------------------------------- */
 export const createPixTransaction = async (req: Request, res: Response): Promise<void> => {
+  let transaction: InstanceType<typeof Transaction> | null = null;
+
   try {
     const user = await getAuthenticatedUser(req);
     if (!user) {
@@ -460,23 +463,16 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
     const fee = round(calculatePixTax(amount, fixed, percentage));
     const netAmount = round(amount - fee);
 
-    const txid = generateTxid();
-    const externalReference = `PIX-${txid}`;
-    const expiresAt = new Date(Date.now() + safeExpiresInMinutes * 60 * 1000);
+    const externalReference = generateExternalReference("PIX");
 
     const customerDocumentRaw =
       req.body?.customer?.document?.number ||
       req.body?.customer?.document ||
       "";
 
-    const pixCode = buildPixCode({
-      pixKey: user.pixKey || "pix@orionpay.local",
-      amount,
-      txid,
-      description,
-    });
+    const pixProvider = getPixProvider(user);
 
-    const transaction = new Transaction({
+    transaction = new Transaction({
       userId: user._id,
       productId: null,
       type: "pix_charge",
@@ -487,12 +483,11 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       method: "pix",
       status: "pending",
       externalReference,
-      provider: "internal",
-      providerId: txid,
+      provider: pixProvider.providerName as any,
+      providerId: "",
       providerStatus: "pending",
       description,
       postback: req.body.postback || "",
-      expiresAt,
       purchaseData: {
         customer: {
           name: req.body?.customer?.name || "Cliente",
@@ -505,11 +500,34 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
         products: [],
       },
       pix: {
-        txid,
-        qrCodeText: pixCode,
-        expiresAt,
+        txid: "",
+        qrCodeText: "",
+        expiresAt: new Date(Date.now() + safeExpiresInMinutes * 60 * 1000),
       },
     });
+
+    await transaction.save();
+
+    const charge = await pixProvider.createCharge({
+      amount,
+      description,
+      expiresInMinutes: safeExpiresInMinutes,
+      orderId: externalReference,
+      customer: {
+        name: req.body?.customer?.name || "Cliente",
+        email: req.body?.customer?.email || "",
+        document: onlyNumbers(customerDocumentRaw),
+      },
+    });
+
+    transaction.providerId = charge.txid;
+    transaction.providerStatus = "pending";
+    transaction.expiresAt = charge.expiresAt;
+    transaction.pix = {
+      txid: charge.txid,
+      qrCodeText: charge.qrCodeText,
+      expiresAt: charge.expiresAt,
+    };
 
     await transaction.save();
 
@@ -517,7 +535,7 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       status: true,
       msg: "✅ Cobrança PIX criada com sucesso.",
       transactionId: transaction._id,
-      pix: pixCode,
+      pix: charge.qrCodeText,
       transaction: {
         id: transaction._id,
         status: transaction.status,
@@ -536,8 +554,30 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       },
     });
   } catch (error) {
-    console.error("❌ Erro em createPixTransaction:", error);
-    res.status(500).json({ status: false, msg: "Erro ao criar cobrança PIX." });
+    if (transaction?._id) {
+      await Transaction.findByIdAndDelete(transaction._id).catch(() => undefined);
+    }
+
+    const maybeAxios = error as { response?: { data?: unknown }; message?: string };
+    console.error(
+      "❌ Erro em createPixTransaction:",
+      maybeAxios?.response?.data || maybeAxios?.message || error
+    );
+
+    if (error instanceof Error && error.message === "PIX_PROVIDER_NOT_CONFIGURED") {
+      res.status(500).json({ status: false, msg: "Provider PIX não configurado." });
+      return;
+    }
+
+    const errData = maybeAxios?.response?.data as Record<string, unknown> | undefined;
+    res.status(500).json({
+      status: false,
+      msg:
+        (errData?.message as string) ||
+        (errData?.msg as string) ||
+        maybeAxios?.message ||
+        "Erro ao criar cobrança PIX.",
+    });
   }
 };
 
@@ -990,6 +1030,65 @@ export const webhookTransaction = async (req: WebhookRequest, res: Response): Pr
 
       console.log(`ℹ️ Webhook cripto processado: tx=${transaction._id} paymentId=${event.paymentId} status=${event.providerStatus}`);
       res.status(200).json({ status: true, msg: "✅ Webhook cripto processado com sucesso.", transaction });
+      return;
+    }
+
+    // ── PIX provider webhook ──────────────────────────────────────────────────
+    const pixProvider = detectPixProviderFromWebhook(
+      req.body as Record<string, unknown>,
+      req.headers as Record<string, string | string[] | undefined>
+    );
+
+    if (pixProvider) {
+      if (!pixProvider.verifyWebhook(req)) {
+        console.warn("❌ Assinatura do webhook PIX inválida.");
+        res.status(401).json({ status: false, msg: "Assinatura do webhook inválida." });
+        return;
+      }
+
+      const event = pixProvider.parseWebhook(req.body as Record<string, unknown>);
+
+      if (!event.txid) {
+        res.status(400).json({ status: false, msg: "txid é obrigatório no webhook PIX." });
+        return;
+      }
+
+      const transaction = await Transaction.findOne({
+        $or: [
+          { "pix.txid": event.txid },
+          { providerId: event.txid },
+          { externalReference: event.txid },
+          { externalId: event.txid },
+        ],
+      });
+
+      if (!transaction) {
+        res.status(404).json({ status: false, msg: "Transação PIX não encontrada." });
+        return;
+      }
+
+      transaction.provider = pixProvider.providerName as any;
+      transaction.providerId = event.txid;
+      transaction.providerStatus = event.providerStatus;
+
+      if (event.normalizedStatus === "approved") {
+        await transaction.save();
+        const result = await creditWalletAfterChargeApproval(transaction._id.toString(), req);
+        res.status(result.code).json({ status: result.ok, msg: result.msg, transaction: result.transaction });
+        return;
+      }
+
+      if (event.normalizedStatus === "expired") {
+        transaction.status = "cancelled";
+        transaction.providerStatus = event.providerStatus;
+      } else if (event.normalizedStatus === "failed") {
+        transaction.status = "failed";
+        transaction.providerStatus = event.providerStatus;
+      }
+
+      await transaction.save();
+      console.log(`ℹ️ Webhook PIX processado: tx=${transaction._id} txid=${event.txid} status=${event.providerStatus}`);
+      res.status(200).json({ status: true, msg: "✅ Webhook PIX processado com sucesso.", transaction });
       return;
     }
 
