@@ -17,6 +17,7 @@ export type TransactionMethod =
 export type TransactionProvider =
   | "internal"
   | "cartwave"
+  | "cartwavehub"
   | "zendry"
   | "nowpayments"
   | "7trust";
@@ -189,7 +190,7 @@ const transactionSchema = new Schema<ITransaction>(
 
     provider: {
       type: String,
-      enum: ["internal", "cartwave", "zendry", "nowpayments", "7trust"],
+      enum: ["internal", "cartwave", "cartwavehub", "zendry", "nowpayments", "7trust"],
       required: true,
       default: "internal",
       index: true,
