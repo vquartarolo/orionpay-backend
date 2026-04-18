@@ -65,11 +65,48 @@ export const CartWaveHubProvider: PixProvider = {
       type_fine: "NONE",
     };
 
-    const response = await axios.post(
-      `${BASE_URL}/finance/create-pix-copy-and-paste-web/`,
-      body,
-      { headers: buildHeaders() }
-    );
+    const headers = buildHeaders();
+    const endpoint = `${BASE_URL}/finance/create-pix-copy-and-paste-web/`;
+
+    // ── DEBUG ──────────────────────────────────────────────────────────────────
+    const rawToken = process.env.CARTWAVE_TOKEN ?? "";
+    const tokenPreview = rawToken
+      ? `${rawToken.slice(0, 6)}...${rawToken.slice(-4)} (len=${rawToken.length})`
+      : "AUSENTE";
+    const authHeader = headers["Authorization"] ?? "";
+    const authPreview = authHeader.startsWith("Bearer ")
+      ? `Bearer ${authHeader.slice(7, 13)}...${authHeader.slice(-4)}`
+      : `FORMATO INVÁLIDO: "${authHeader.slice(0, 20)}"`;
+
+    console.log("🔍 [CartWaveHub] REQUEST ─────────────────────────");
+    console.log("  URL    :", endpoint);
+    console.log("  Method : POST");
+    console.log("  Token  :", tokenPreview);
+    console.log("  Auth   :", authPreview);
+    console.log("  Headers:", JSON.stringify({
+      ...headers,
+      Authorization: authPreview,
+    }, null, 2));
+    console.log("  Payload:", JSON.stringify(body, null, 2));
+    console.log("──────────────────────────────────────────────────");
+
+    let response;
+    try {
+      response = await axios.post(endpoint, body, { headers });
+    } catch (err: any) {
+      const res = err?.response;
+      console.log("❌ [CartWaveHub] ERRO NA RESPOSTA ────────────────");
+      console.log("  Status :", res?.status ?? "sem resposta");
+      console.log("  Headers:", JSON.stringify(res?.headers ?? {}, null, 2));
+      console.log("  Body   :", JSON.stringify(res?.data ?? err?.message, null, 2));
+      console.log("──────────────────────────────────────────────────");
+      throw err;
+    }
+
+    console.log("✅ [CartWaveHub] RESPOSTA ────────────────────────");
+    console.log("  Status :", response.status);
+    console.log("  Body   :", JSON.stringify(response.data, null, 2));
+    console.log("──────────────────────────────────────────────────");
 
     const data = response.data as Record<string, unknown>;
 
