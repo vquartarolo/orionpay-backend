@@ -640,6 +640,7 @@ export const getMe = async (req: Request, res: Response): Promise<void> => {
         twofa: user.twofaEnabled ?? false,
         notifications: user.notifications ?? true,
         emailVerified: user.emailVerified ?? false,
+        avatar: user.avatar ?? "",
       },
     });
   } catch (err) {
@@ -671,7 +672,7 @@ export const updateMySettings = async (
       return;
     }
 
-    const { name, document, pixKey, defaultAddress, notifications, phone } =
+    const { name, document, pixKey, defaultAddress, notifications, phone, avatar } =
       req.body;
 
     const user = await User.findById(payload.id);
@@ -688,6 +689,7 @@ export const updateMySettings = async (
     if (typeof pixKey === "string") user.pixKey = pixKey.trim();
     if (typeof phone === "string") user.phone = sanitizePhone(phone);
     if (typeof notifications === "boolean") user.notifications = notifications;
+    if (typeof avatar === "string") user.avatar = avatar;
 
     await user.save();
 
@@ -713,6 +715,7 @@ export const updateMySettings = async (
         twofa: user.twofaEnabled ?? false,
         notifications: user.notifications ?? true,
         emailVerified: user.emailVerified ?? false,
+        avatar: user.avatar ?? "",
       },
       wallet: wallet
         ? {
