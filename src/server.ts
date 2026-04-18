@@ -57,8 +57,9 @@ app.use(
 
 /* -------------------------------------------------------
 📦 JSON padrão (resto da API)
+Limite 10mb para suportar imagens base64 no payload
 -------------------------------------------------------- */
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 /* -------------------------------------------------------
 📁 Uploads
@@ -99,12 +100,14 @@ app.use((_req: Request, res: Response) => {
 /* -------------------------------------------------------
 💥 ERROS
 -------------------------------------------------------- */
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error("Erro interno:", err.stack);
-  res.status(500).json({
-    status: false,
-    msg: "Erro interno no servidor.",
-  });
+  const status = typeof err.status === "number" ? err.status : 500;
+  const msg =
+    status === 413
+      ? "Payload muito grande. Reduza o tamanho das imagens."
+      : "Erro interno no servidor.";
+  res.status(status).json({ status: false, msg });
 });
 
 /* -------------------------------------------------------

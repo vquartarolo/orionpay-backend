@@ -137,7 +137,17 @@ export const createProduct = async (
   res: Response
 ): Promise<void> => {
   try {
+    console.log("[PRODUCT CREATE] REQUEST", {
+      method: req.method,
+      url: req.originalUrl,
+      contentType: req.headers["content-type"],
+      bodyKeys: Object.keys(req.body || {}),
+    });
+
     const user = await getUserFromToken(req.headers.authorization);
+
+    console.log("[PRODUCT CREATE] USER", user ? { id: String(user._id), email: (user as any).email } : null);
+
     if (!user) {
       res.status(403).json({
         status: false,
@@ -146,7 +156,29 @@ export const createProduct = async (
       return;
     }
 
-    let { name, description, price, status, category } = req.body;
+    let {
+      name,
+      description,
+      price,
+      type,
+      deliveryType,
+      images,
+      videoUrl,
+      status,
+      category,
+    } = req.body;
+
+    console.log("[PRODUCT CREATE] PAYLOAD", {
+      name,
+      description: description?.slice?.(0, 60),
+      price,
+      type,
+      deliveryType,
+      imagesCount: Array.isArray(images) ? images.length : typeof images,
+      videoUrl,
+      status,
+      category,
+    });
 
     if (!name || price === undefined) {
       res.status(400).json({
@@ -160,17 +192,29 @@ export const createProduct = async (
       status = status ? "active" : "inactive";
     }
 
-    const product = new Product({
+    const safeImages = Array.isArray(images) ? images.filter((v: any) => typeof v === "string" && v.length > 0) : [];
+
+    const dataToSave = {
       userId: user._id,
-      name,
-      description,
-      price,
+      name: String(name).trim(),
+      description: description ?? "",
+      price: Number(price),
+      type: type ?? "unique",
+      deliveryType: deliveryType ?? "digital",
+      images: safeImages,
+      videoUrl: videoUrl ?? "",
       status: status ?? "active",
       category: category ?? "infoproduto",
       sales: { approved: 0, pending: 0, refused: 0 },
       createdAt: new Date(),
+    };
+
+    console.log("[PRODUCT CREATE] DATA TO SAVE", {
+      ...dataToSave,
+      images: `[${dataToSave.images.length} imagem(ns)]`,
     });
 
+    const product = new Product(dataToSave);
     await product.save();
 
     res.status(201).json({
@@ -183,8 +227,15 @@ export const createProduct = async (
         checkoutName: null,
       },
     });
-  } catch (error) {
-    console.error("❌ Erro em createProduct:", error);
+  } catch (error: any) {
+    console.error("[PRODUCT CREATE] ERROR", error?.message ?? error);
+    console.error("[PRODUCT CREATE] STACK", error?.stack);
+    if (error?.name === "ValidationError") {
+      console.error("[PRODUCT CREATE] VALIDATION", JSON.stringify(error.errors, null, 2));
+    }
+    if (error?.code === 11000) {
+      console.error("[PRODUCT CREATE] DUPLICATE KEY", error.keyValue);
+    }
     res.status(500).json({
       status: false,
       msg: "Erro interno ao criar produto.",
@@ -280,8 +331,19 @@ export const editProduct = async (
       return;
     }
 
-    let { oldName, newName, name, description, price, status, category } =
-      req.body;
+    let {
+      oldName,
+      newName,
+      name,
+      description,
+      price,
+      type,
+      deliveryType,
+      images,
+      videoUrl,
+      status,
+      category,
+    } = req.body;
     const idFromParams = req.params.id;
 
     if (typeof status === "boolean") {
@@ -315,9 +377,17 @@ export const editProduct = async (
     if (newName) product.name = newName;
     if (name) product.name = name;
     if (description !== undefined) product.description = description;
-    if (price !== undefined) product.price = price;
+    if (price !== undefined) product.price = Number(price);
     if (status) product.status = status;
     if (category) product.category = category;
+    if (type) product.type = type;
+    if (deliveryType) product.deliveryType = deliveryType;
+    if (images !== undefined) {
+      product.images = Array.isArray(images)
+        ? images.filter((v: any) => typeof v === "string" && v.length > 0)
+        : [];
+    }
+    if (videoUrl !== undefined) product.videoUrl = videoUrl;
 
     await product.save();
 
