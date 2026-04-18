@@ -2,10 +2,7 @@ import { CartWaveHubProvider } from "./cartwavehub.provider";
 import type { PixProvider } from "../provider.types";
 
 export function getPixProvider(_user?: unknown): PixProvider {
-  const configured =
-    process.env.CARTWAVE_API_PASSWORD && process.env.CARTWAVE_API_HMAC;
-
-  if (configured) return CartWaveHubProvider;
+  if (process.env.CARTWAVE_TOKEN) return CartWaveHubProvider;
 
   throw new Error("PIX_PROVIDER_NOT_CONFIGURED");
 }
