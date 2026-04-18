@@ -845,7 +845,71 @@ export const consultTransactionByID = async (req: Request, res: Response): Promi
 };
 
 /* -------------------------------------------------------
-🔁 6. Webhook
+🌐 6. Consulta pública de cobrança (sem autenticação)
+-------------------------------------------------------- */
+export const getPublicTransaction = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      res.status(400).json({ status: false, msg: "ID da cobrança é obrigatório." });
+      return;
+    }
+
+    const transaction = await Transaction.findById(id);
+    if (!transaction) {
+      res.status(404).json({ status: false, msg: "Cobrança não encontrada." });
+      return;
+    }
+
+    if (
+      transaction.expiresAt &&
+      transaction.status === "pending" &&
+      new Date(transaction.expiresAt) <= new Date()
+    ) {
+      transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
+      transaction.providerStatus = transaction.method === "crypto" ? "expired" : "cancelled";
+      if (transaction.method === "crypto") {
+        transaction.crypto = {
+          ...(transaction.crypto || {}),
+          paymentStatus: transaction.crypto?.paymentStatus || "expired",
+        };
+      }
+      await transaction.save();
+    }
+
+    res.status(200).json({
+      id: transaction._id.toString(),
+      status: transaction.status,
+      method: transaction.method,
+      amount: transaction.amount,
+      description: transaction.description || "",
+      expiresAt: transaction.expiresAt || null,
+      createdAt: transaction.createdAt,
+      crypto: transaction.method === "crypto"
+        ? {
+            payAddress: transaction.crypto?.payAddress || "",
+            payAmount: transaction.crypto?.payAmount || 0,
+            payCurrency: transaction.crypto?.payCurrency || "",
+            network: transaction.crypto?.network || "",
+            expiresAt: transaction.crypto?.expiresAt || null,
+          }
+        : null,
+      pix: transaction.method === "pix"
+        ? {
+            qrCodeText: transaction.pix?.qrCodeText || "",
+            expiresAt: transaction.pix?.expiresAt || null,
+          }
+        : null,
+    });
+  } catch (error) {
+    console.error("❌ Erro em getPublicTransaction:", error);
+    res.status(500).json({ status: false, msg: "Erro ao consultar cobrança." });
+  }
+};
+
+/* -------------------------------------------------------
+🔁 7. Webhook
 -------------------------------------------------------- */
 export const webhookTransaction = async (req: WebhookRequest, res: Response): Promise<void> => {
   try {

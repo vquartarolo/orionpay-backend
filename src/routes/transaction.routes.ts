@@ -5,6 +5,7 @@ import {
   createPixTransaction,
   createTransaction,
   getDashboard,
+  getPublicTransaction,
   getTransactionsHistory,
   simulatePixPayment,
   webhookTransaction,
@@ -45,6 +46,7 @@ router.post(
 🔍 CONSULTA
 -------------------------------------------------------- */
 router.get("/consult", requireAuth, consultTransactionByID);
+router.get("/public/:id", getPublicTransaction);
 
 /* -------------------------------------------------------
 🔁 WEBHOOK (NÃO AUTENTICADO)
