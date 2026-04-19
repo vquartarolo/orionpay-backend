@@ -324,33 +324,32 @@ function resolveUserPixProvider(_user?: any): {
   };
 }
 
-// Auto-detecta o tipo da chave PIX a partir do valor informado.
+// Detecta o tipo da chave PIX com base exclusivamente no formato do valor.
+// O backend é a fonte da verdade — o valor enviado pelo frontend é apenas auditado.
 function detectPixKeyType(key: string): PixKeyType {
   const raw = key.trim();
   const digits = raw.replace(/\D/g, "");
 
-  // Email
+  // Email: contém @
   if (raw.includes("@")) return "email";
 
-  // CNPJ (14 dígitos)
-  if (digits.length === 14) return "cnpj";
-
-  // CPF (11 dígitos)
-  if (digits.length === 11) return "cpf";
-
-  // Telefone: começa com + ou tem 10-11 dígitos com DDD
-  if (raw.startsWith("+") || digits.length === 10 || digits.length === 11) {
-    // evita confundir CPF (11 dígitos) — CPF já retornou acima
-    if (raw.startsWith("+")) return "phone";
-  }
-
-  // EVP (chave aleatória): formato UUID-like
+  // EVP (chave aleatória): UUID no formato padrão
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
     return "random";
   }
 
-  // Default: cpf (fallback seguro)
-  return "cpf";
+  // Telefone: começa com + (formato internacional)
+  if (raw.startsWith("+")) return "phone";
+
+  // Apenas dígitos
+  if (/^\d+$/.test(raw)) {
+    if (digits.length === 14) return "cnpj";
+    if (digits.length === 11) return "cpf"; // ambíguo com celular 9 dígitos + DDD; CPF é padrão
+    if (digits.length === 10) return "phone"; // telefone 8 dígitos + DDD
+  }
+
+  // Qualquer outro formato → chave aleatória (EVP)
+  return "random";
 }
 
 /* -------------------------------------------------------
@@ -372,16 +371,19 @@ export const createCashoutRequest = async (
 
     const rawAmount = Number(req.body?.amount);
     const pixKey = String(req.body?.pixKey || req.body?.pix_key || "").trim();
-    const pixKeyTypeRaw = String(req.body?.pixKeyType || req.body?.pix_key_type || "").trim();
-    const pixKeyType = pixKeyTypeRaw
-      ? normalizePixKeyType(pixKeyTypeRaw)
-      : detectPixKeyType(pixKey);
+    const pixKeyTypeFrontend = String(req.body?.pixKeyType || req.body?.pix_key_type || "").trim();
+    const pixKeyType = detectPixKeyType(pixKey); // backend sempre detecta, ignora frontend
     const receiverName = String(req.body?.receiverName || req.body?.name || "").trim();
     const receiverDocument = onlyNumbers(
       String(req.body?.receiverDocument || req.body?.document || "")
     );
 
-    console.log(`[CREATE CASHOUT] PIX KEY TYPE: "${pixKeyType}" (chave: "${pixKey}"${pixKeyTypeRaw ? `, informado: "${pixKeyTypeRaw}"` : ", auto-detectado"})`);
+    const normalizedFrontendType = pixKeyTypeFrontend ? normalizePixKeyType(pixKeyTypeFrontend) : "";
+    if (normalizedFrontendType && normalizedFrontendType !== pixKeyType) {
+      console.warn(`[PIX TYPE DETECTED] DIVERGÊNCIA — frontend: "${pixKeyTypeFrontend}" | detectado: "${pixKeyType}" | usando detectado`);
+    } else {
+      console.log(`[PIX TYPE DETECTED] inputKey: "${pixKey}" | detectedType: "${pixKeyType}" | frontendType: "${pixKeyTypeFrontend || "(não informado)"}"`)
+    }
 
 
     if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
