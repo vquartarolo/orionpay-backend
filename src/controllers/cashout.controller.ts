@@ -329,8 +329,13 @@ function sanitizePixKey(key: string, type: PixKeyType): string {
   const raw = key.trim();
   if (type === "cpf" || type === "cnpj") return raw.replace(/\D/g, "");
   if (type === "phone") {
+    // frontend já envia E.164; sanitize defensivo mantém "+" e dígitos apenas
     const hasPlus = raw.startsWith("+");
     return (hasPlus ? "+" : "") + raw.replace(/\D/g, "");
+  }
+  if (type === "email") {
+    // normaliza: lowercase, sem espaços, sem quebras de linha, máx 254 chars
+    return raw.replace(/[\r\n\t\s]/g, "").toLowerCase().slice(0, 254);
   }
   return raw;
 }
@@ -367,22 +372,34 @@ function validatePixKeyFormat(key: string, type: PixKeyType): string | null {
     if (!isValidCPF(digits))
       return "CPF inválido — verifique os dígitos verificadores.";
   }
+
   if (type === "cnpj") {
     if (!/^\d{14}$/.test(digits))
       return "Chave CNPJ inválida — deve conter exatamente 14 dígitos numéricos.";
   }
+
   if (type === "email") {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw))
-      return "E-mail inválido.";
+    // Sanitize defensivo antes de validar
+    const email = raw.replace(/[\r\n\t\s]/g, "").toLowerCase();
+    if (!email) return "E-mail obrigatório.";
+    if (email.length > 254) return "E-mail inválido — máximo 254 caracteres.";
+    // RFC 5321 simplificado: local@domain.tld, sem caracteres de controle
+    if (!/^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/.test(email))
+      return "E-mail inválido — verifique o formato.";
   }
+
   if (type === "phone") {
-    if (!/^\+?\d{10,13}$/.test(raw.replace(/[\s().-]/g, "")))
-      return "Telefone inválido — use o formato +5511999999999.";
+    // Frontend envia E.164 via libphonenumber-js; validamos formato estrito aqui.
+    // E.164: "+" seguido de 7 a 15 dígitos (padrão ITU-T E.164).
+    if (!/^\+\d{7,15}$/.test(raw))
+      return "Telefone inválido — envie no formato E.164 (ex: +5511999999999).";
   }
+
   if (type === "random") {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw))
       return "Chave aleatória inválida — formato UUID esperado.";
   }
+
   return null;
 }
 
