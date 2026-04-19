@@ -34,14 +34,17 @@ function resolveWithdrawalStatus(
 ): "completed" | "processing" | "failed" {
   const s = eventType.toUpperCase();
 
-  if (s === "WITHDRAWAL_PAID") return "completed";
+  if (["WITHDRAWAL_PAID", "PAID", "COMPLETED"].includes(s))
+    return "completed";
 
-  if (
-    ["WITHDRAWAL_FAILED", "WITHDRAWAL_CANCELED", "WITHDRAWAL_CANCELLED",
-     "WITHDRAWAL_BLOCKED", "WITHDRAWAL_REFUNDED"].includes(s)
-  )
+  if ([
+    "WITHDRAWAL_FAILED", "WITHDRAWAL_CANCELED", "WITHDRAWAL_CANCELLED",
+    "WITHDRAWAL_BLOCKED", "WITHDRAWAL_REFUNDED", "FAILED", "CANCELED", "REFUNDED",
+  ].includes(s))
     return "failed";
 
+  // Estados intermediários: WITHDRAWAL_PENDING, WITHDRAWAL_APPROVED,
+  // WITHDRAWAL_PROCESSING, WITHDRAWAL_IN_PROGRESS — todos sem estorno
   return "processing";
 }
 
@@ -466,7 +469,10 @@ export const adminSyncWitetecWithdrawal = async (
   res: Response
 ): Promise<void> => {
   try {
-    const { cashoutId } = req.body as { cashoutId?: string };
+    const { cashoutId, witetecWithdrawalId } = req.body as {
+      cashoutId?: string;
+      witetecWithdrawalId?: string; // override manual quando providerId está vazio
+    };
 
     if (!cashoutId) {
       res.status(400).json({ status: false, msg: "cashoutId é obrigatório." });
@@ -490,10 +496,22 @@ export const adminSyncWitetecWithdrawal = async (
       return;
     }
 
-    const witetecId = cashout.providerId;
+    // Usa o ID salvo no banco; se estiver vazio (WITHDRAWAL_IN_PROGRESS sem ID),
+    // aceita override manual do admin via witetecWithdrawalId no body.
+    const witetecId = String(cashout.providerId || witetecWithdrawalId || "").trim();
+
     if (!witetecId) {
-      res.status(400).json({ status: false, msg: "providerId do saque está vazio." });
+      res.status(400).json({
+        status: false,
+        msg: "providerId do saque está vazio. Localize o ID do saque no painel da Witetec e envie o campo witetecWithdrawalId no body.",
+      });
       return;
+    }
+
+    // Se admin forneceu ID manual, salva no cashout para uso futuro
+    if (!cashout.providerId && witetecWithdrawalId) {
+      cashout.providerId = witetecWithdrawalId;
+      console.log(`[WITETEC WITHDRAWAL SYNC] providerId atualizado manualmente para ${witetecWithdrawalId}`);
     }
 
     console.log(`[WITETEC WITHDRAWAL SYNC] Consultando Witetec para withdrawal=${witetecId}`);

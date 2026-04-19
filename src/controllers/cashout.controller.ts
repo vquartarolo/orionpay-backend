@@ -50,6 +50,32 @@ function onlyNumbers(value: string = ""): string {
   return value.replace(/\D/g, "");
 }
 
+// ── Resposta de erro padronizada (nunca expõe detalhes técnicos ao usuário) ──
+function cashoutError(
+  res: Response,
+  httpStatus: number,
+  code: string,
+  message: string,
+  internalDetail?: string
+): void {
+  if (internalDetail) {
+    console.error(`[CASHOUT ERROR] code=${code} | ${internalDetail}`);
+  }
+  res.status(httpStatus).json({ success: false, code, message });
+}
+
+// Mapeia tipo de chave PIX → código de erro semântico
+function pixKeyTypeToErrorCode(type: PixKeyType): string {
+  const map: Record<PixKeyType, string> = {
+    cpf:    "INVALID_CPF",
+    cnpj:   "INVALID_PIX_KEY",
+    email:  "INVALID_EMAIL",
+    phone:  "INVALID_PHONE",
+    random: "INVALID_PIX_KEY",
+  };
+  return map[type] ?? "INVALID_PIX_KEY";
+}
+
 function normalizePixKeyType(value: string = ""): PixKeyType {
   const normalized = String(value || "").trim().toLowerCase();
 
@@ -76,22 +102,20 @@ function pixKeyTypeToWitetec(type: PixKeyType): string {
 function mapWithdrawalProviderStatus(status: string = ""): InternalCashoutStatus {
   const s = String(status || "").trim().toUpperCase();
 
-  if (
-    ["COMPLETED", "PAID", "SUCCESS", "WITHDRAWAL_PAID"].includes(s)
-  ) {
+  if (["COMPLETED", "PAID", "SUCCESS", "WITHDRAWAL_PAID"].includes(s)) {
     return "completed";
   }
 
-  if (
-    [
-      "FAILED", "ERROR", "CANCELLED", "CANCELED", "REJECTED",
-      "WITHDRAWAL_FAILED", "WITHDRAWAL_CANCELED", "WITHDRAWAL_CANCELLED",
-      "WITHDRAWAL_BLOCKED", "WITHDRAWAL_REFUNDED",
-    ].includes(s)
-  ) {
+  if ([
+    "FAILED", "ERROR", "CANCELLED", "CANCELED", "REJECTED",
+    "WITHDRAWAL_FAILED", "WITHDRAWAL_CANCELED", "WITHDRAWAL_CANCELLED",
+    "WITHDRAWAL_BLOCKED", "WITHDRAWAL_REFUNDED",
+  ].includes(s)) {
     return "failed";
   }
 
+  // Estados intermediários da Witetec — todos mapeiam para processing (sem estorno)
+  // WITHDRAWAL_PENDING, WITHDRAWAL_APPROVED, WITHDRAWAL_PROCESSING, WITHDRAWAL_IN_PROGRESS
   return "processing";
 }
 
@@ -236,6 +260,7 @@ async function sendPixCashoutToWitetec(input: {
   console.log("  KeyType:", pixKeyTypeToWitetec(input.pixKeyType));
   console.log("  RefId  :", input.cashoutId);
   console.log("──────────────────────────────────────────────────────────────");
+  console.log("WITETEC PAYLOAD:", JSON.stringify(payload, null, 2));
 
   let response;
   try {
@@ -248,13 +273,49 @@ async function sendPixCashoutToWitetec(input: {
     });
   } catch (err: any) {
     const res = err?.response;
+    const resData = res?.data as Record<string, unknown> | undefined;
+
     console.error("[WITETEC PAYOUT] ERROR ────────────────────────────────────");
     console.error("  Status :", res?.status ?? "sem resposta");
-    console.error(JSON.stringify(res?.data ?? err?.message, null, 2));
+    console.error(JSON.stringify(resData ?? err?.message, null, 2));
     console.error("──────────────────────────────────────────────────────────");
+    console.log("WITETEC ERROR FULL:", err);
+    console.log("WITETEC ERROR RESPONSE:", resData);
+    console.log("WITETEC ERROR STATUS:", res?.status);
+
+    // ── WITHDRAWAL_IN_PROGRESS ─────────────────────────────────────────────
+    // A Witetec já tem este saque em andamento — NÃO é falha definitiva.
+    // Retornar como "processing" para evitar rollback indevido do saldo.
+    const errCode = String(resData?.code ?? "").toUpperCase();
+    const errMsg  = String(resData?.message ?? resData?.msg ?? "").toUpperCase();
+    const isInProgress =
+      errCode.includes("IN_PROGRESS") ||
+      errCode === "WITHDRAWAL_PENDING"  ||
+      errMsg.includes("IN_PROGRESS")    ||
+      errMsg.includes("IN PROGRESS");
+
+    if (isInProgress) {
+      // Tenta extrair o ID da Witetec do corpo do erro, se disponível
+      const existingId = String(
+        (resData?.data as any)?.id ?? resData?.id ?? ""
+      ).trim();
+
+      console.log("[WITETEC PAYOUT] WITHDRAWAL_IN_PROGRESS — saque já existe na Witetec");
+      console.log("[WITETEC PAYOUT] NO ROLLBACK — mantendo saldo congelado. cashoutId:", input.cashoutId);
+      console.log("[WITETEC PAYOUT] STATUS UPDATED — provider retornou in-progress, marcando como processing");
+
+      return {
+        provider: "witetec" as PixProvider,
+        providerId: existingId,                  // vazio se Witetec não retornou ID no erro
+        providerStatus: "WITHDRAWAL_IN_PROGRESS",
+        providerReference: input.cashoutId,
+        providerIdempotencyKey: "",
+      };
+    }
+
     throw new Error(
       `Witetec withdrawal falhou (${res?.status ?? "sem resposta"}): ` +
-        JSON.stringify(res?.data ?? err?.message)
+        JSON.stringify(resData ?? err?.message)
     );
   }
 
@@ -262,6 +323,7 @@ async function sendPixCashoutToWitetec(input: {
   console.log("  HTTP Status :", response.status);
   console.log(JSON.stringify(response.data, null, 2));
   console.log("──────────────────────────────────────────────────────────────");
+  console.log("WITETEC RESPONSE:", response.data);
 
   const envelope = response.data as Record<string, unknown>;
   const data = ((envelope?.data ?? envelope) as Record<string, unknown>);
@@ -444,7 +506,7 @@ export const createCashoutRequest = async (
     const payload = await getAuthPayload(req);
 
     if (!payload?.id) {
-      res.status(403).json({ status: false, msg: "Token inválido." });
+      cashoutError(res, 403, "AUTH_ERROR", "Acesso negado.");
       return;
     }
 
@@ -465,12 +527,12 @@ export const createCashoutRequest = async (
     }
 
     if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
-      res.status(400).json({ status: false, msg: "Valor de saque inválido." });
+      cashoutError(res, 400, "INVALID_AMOUNT", "Informe um valor de saque válido.");
       return;
     }
 
     if (!pixKey) {
-      res.status(400).json({ status: false, msg: "Chave PIX obrigatória." });
+      cashoutError(res, 400, "INVALID_PIX_KEY", "Informe a chave PIX.");
       return;
     }
 
@@ -478,7 +540,7 @@ export const createCashoutRequest = async (
     const cleanPixKey = sanitizePixKey(pixKey, pixKeyType);
     const keyFormatError = validatePixKeyFormat(cleanPixKey, pixKeyType);
     if (keyFormatError) {
-      res.status(400).json({ status: false, msg: keyFormatError });
+      cashoutError(res, 400, pixKeyTypeToErrorCode(pixKeyType), keyFormatError);
       return;
     }
 
@@ -589,26 +651,23 @@ export const createCashoutRequest = async (
 
     res.status(201).json(responsePayload);
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
     console.error("❌ Erro em createCashoutRequest:", error);
 
-    if (error instanceof Error) {
-      if (error.message === "USER_NOT_FOUND") {
-        res.status(404).json({ status: false, msg: "Usuário não encontrado." });
-        return;
-      }
-
-      if (error.message === "WALLET_NOT_FOUND") {
-        res.status(404).json({ status: false, msg: "Carteira não encontrada." });
-        return;
-      }
-
-      if (error.message === "INSUFFICIENT_BALANCE") {
-        res.status(400).json({ status: false, msg: "Saldo insuficiente." });
-        return;
-      }
+    if (errMsg === "USER_NOT_FOUND") {
+      cashoutError(res, 404, "USER_NOT_FOUND", "Usuário não encontrado.", errMsg);
+      return;
+    }
+    if (errMsg === "WALLET_NOT_FOUND") {
+      cashoutError(res, 404, "INTERNAL_ERROR", "Ocorreu um erro ao processar o saque. Tente novamente.", errMsg);
+      return;
+    }
+    if (errMsg === "INSUFFICIENT_BALANCE") {
+      cashoutError(res, 400, "INSUFFICIENT_BALANCE", "Saldo insuficiente para realizar o saque.");
+      return;
     }
 
-    res.status(500).json({ status: false, msg: "Erro ao criar solicitação de saque." });
+    cashoutError(res, 500, "INTERNAL_ERROR", "Ocorreu um erro ao processar o saque. Tente novamente.", errMsg);
   } finally {
     await session.endSession();
   }
@@ -885,7 +944,15 @@ export const updateCashoutStatus = async (
         throw new Error("CASHOUT_NOT_FOUND");
       }
 
-      if (!["pending", "pending_admin"].includes(String(cashout.status || "").toLowerCase())) {
+      const currentStatus = String(cashout.status || "").toLowerCase();
+
+      // Saque já enviado à Witetec e aguardando confirmação — bloqueia nova tentativa de envio.
+      // O saldo CONTINUA congelado; aguardar webhook ou sync manual.
+      if (currentStatus === "processing") {
+        throw new Error("CASHOUT_IN_PROGRESS");
+      }
+
+      if (!["pending", "pending_admin"].includes(currentStatus)) {
         throw new Error("CASHOUT_ALREADY_PROCESSED");
       }
 
@@ -1213,6 +1280,15 @@ export const updateCashoutStatus = async (
     if (error instanceof Error) {
       if (error.message === "CASHOUT_NOT_FOUND") {
         res.status(404).json({ status: false, msg: "Solicitação não encontrada." });
+        return;
+      }
+
+      if (error.message === "CASHOUT_IN_PROGRESS") {
+        res.status(409).json({
+          status: false,
+          code: "CASHOUT_IN_PROGRESS",
+          msg: "Este saque já foi enviado à Witetec e está aguardando confirmação. Use o sync manual para verificar o status atual.",
+        });
         return;
       }
 

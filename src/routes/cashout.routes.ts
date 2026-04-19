@@ -12,6 +12,8 @@ import {
   requireSellerAccess,
 } from "../middleware/auth.middleware";
 
+import { cashoutAntifraude } from "../middleware/cashout-antifraude.middleware";
+
 const router = Router();
 
 /* -------------------------------------------------------
@@ -21,6 +23,7 @@ router.post(
   "/create",
   requireAuth,
   requireSellerAccess,
+  cashoutAntifraude,
   createCashoutRequest
 );
 

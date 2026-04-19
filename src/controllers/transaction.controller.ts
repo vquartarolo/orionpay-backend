@@ -1117,71 +1117,8 @@ export const webhookTransaction = async (req: WebhookRequest, res: Response): Pr
       return;
     }
 
-    const { externalCode, status } = req.body;
-
-    if (!externalCode || !status) {
-      res.status(400).json({ status: false, msg: "externalCode e status são obrigatórios." });
-      return;
-    }
-
-    const transaction = await Transaction.findOne({
-      $or: [
-        { _id: externalCode },
-        { externalReference: externalCode },
-        { providerId: externalCode },
-        { externalId: externalCode },
-      ],
-    });
-
-    if (!transaction) {
-      res.status(404).json({ status: false, msg: "Transação não encontrada." });
-      return;
-    }
-
-    if (
-      transaction.expiresAt &&
-      transaction.status === "pending" &&
-      new Date(transaction.expiresAt) <= new Date()
-    ) {
-      transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
-      transaction.providerStatus = transaction.method === "crypto" ? "expired" : "cancelled";
-      await transaction.save();
-
-      res.status(400).json({
-        status: false,
-        msg: "A cobrança expirou e foi cancelada.",
-        transaction,
-      });
-      return;
-    }
-
-    const safeStatus = ["pending", "approved", "failed", "expired", "cancelled"].includes(status)
-      ? (status as TransactionStatus)
-      : "pending";
-
-    transaction.providerStatus = String(status);
-
-    if (["pix", "crypto"].includes(transaction.method) && safeStatus === "approved") {
-      await transaction.save();
-
-      const result = await creditWalletAfterChargeApproval(transaction._id.toString(), req);
-
-      res.status(result.code).json({
-        status: result.ok,
-        msg: result.msg,
-        transaction: result.transaction,
-      });
-      return;
-    }
-
-    transaction.status = safeStatus;
-    await transaction.save();
-
-    res.status(200).json({
-      status: true,
-      msg: "✅ Status atualizado com sucesso.",
-      transaction,
-    });
+    console.warn(`[WEBHOOK] Payload não reconhecido — rejeitado. IP=${req.ip}`);
+    res.status(400).json({ status: false, msg: "Formato de webhook não reconhecido." });
   } catch (error) {
     console.error("❌ Erro em webhookTransaction:", error);
     res.status(500).json({ status: false, msg: "Erro ao processar webhook." });
