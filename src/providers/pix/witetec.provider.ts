@@ -88,6 +88,8 @@ export const WitetecProvider: PixProvider = {
     const expiresAt = new Date(Date.now() + params.expiresInMinutes * 60 * 1000);
 
     // ── Payload ───────────────────────────────────────────────────────────────
+    const webhookUrl = process.env.WITETEC_WEBHOOK_URL ?? "";
+
     const body: Record<string, unknown> = {
       amount: amountInCents,
       method: "PIX",
@@ -110,6 +112,7 @@ export const WitetecProvider: PixProvider = {
           externalRef: params.orderId,
         },
       ],
+      ...(webhookUrl ? { postbackUrl: webhookUrl } : {}),
     };
 
     const headers = {

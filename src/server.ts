@@ -8,6 +8,7 @@ import path from "path";
 import { connectDB } from "./config/database";
 import routes from "./routes";
 import testRoutes from "./routes/test.routes";
+import webhookRoutes from "./routes/witetec-webhook.routes";
 
 const app = express();
 
@@ -74,6 +75,7 @@ connectDB();
 🚀 ROTAS
 -------------------------------------------------------- */
 app.use("/api/test", testRoutes);
+app.use("/api/webhooks", webhookRoutes);
 app.use("/api", routes);
 app.use("/", routes);
 

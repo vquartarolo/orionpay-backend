@@ -20,7 +20,8 @@ export type TransactionProvider =
   | "cartwavehub"
   | "zendry"
   | "nowpayments"
-  | "7trust";
+  | "7trust"
+  | "witetec";
 
 export interface ITransaction extends Document {
   _id: Types.ObjectId;
