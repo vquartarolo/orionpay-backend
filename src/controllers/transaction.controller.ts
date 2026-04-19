@@ -468,7 +468,23 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
     const customerDocumentRaw =
       req.body?.customer?.document?.number ||
       req.body?.customer?.document ||
+      (user as any).document ||
       "";
+
+    const customerPhone =
+      req.body?.customer?.phone ||
+      (user as any).phone ||
+      "";
+
+    if (!onlyNumbers(customerDocumentRaw)) {
+      res.status(400).json({ status: false, msg: "Documento do cliente é obrigatório para gerar PIX." });
+      return;
+    }
+
+    if (!onlyNumbers(customerPhone)) {
+      res.status(400).json({ status: false, msg: "Telefone do cliente é obrigatório para gerar PIX." });
+      return;
+    }
 
     const pixProvider = getPixProvider(user);
 
@@ -516,7 +532,7 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       customer: {
         name: req.body?.customer?.name || user.name || "Cliente",
         email: req.body?.customer?.email || user.email || "",
-        phone: req.body?.customer?.phone || (user as any).phone || "",
+        phone: customerPhone,
         document: onlyNumbers(customerDocumentRaw),
       },
     });

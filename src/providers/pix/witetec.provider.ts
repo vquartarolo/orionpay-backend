@@ -19,11 +19,18 @@ function normalizeStatus(
   if (["PAID", "TRANSACTION_PAID", "AUTHORIZED", "TRANSACTION_AUTHORIZED"].includes(s))
     return "approved";
 
-  if (["FAILED", "REFUSED", "TRANSACTION_FAILED", "TRANSACTION_REFUSED",
-       "TRANSACTION_CHARGEDBACK", "TRANSACTION_BLOCKED"].includes(s))
-    return "failed";
-
-  if (["REFUNDED", "TRANSACTION_REFUNDED"].includes(s))
+  if (
+    [
+      "FAILED",
+      "REFUSED",
+      "TRANSACTION_FAILED",
+      "TRANSACTION_REFUSED",
+      "TRANSACTION_CHARGEDBACK",
+      "TRANSACTION_BLOCKED",
+      "TRANSACTION_REFUNDED",
+      "REFUNDED",
+    ].includes(s)
+  )
     return "failed";
 
   return "pending";
@@ -53,10 +60,24 @@ export const WitetecProvider: PixProvider = {
     const apiKey = process.env.WITETEC_API_KEY ?? "";
     if (!apiKey) throw new Error("WITETEC_API_KEY é obrigatório no .env.");
 
-    const docRaw = params.customer?.document?.replace(/\D/g, "") ?? "";
+    // ── Validação de documento ────────────────────────────────────────────────
+    const docRaw = (params.customer?.document ?? "").replace(/\D/g, "");
+    if (!docRaw) {
+      throw new Error(
+        "Documento do cliente (CPF/CNPJ) é obrigatório para gerar PIX na Witetec."
+      );
+    }
     const documentType = docRaw.length === 14 ? "CNPJ" : "CPF";
 
-    // Witetec usa centavos — mínimo: 100 (R$1,00)
+    // ── Validação de telefone ─────────────────────────────────────────────────
+    const phoneRaw = (params.customer?.phone ?? "").replace(/\D/g, "");
+    if (!phoneRaw) {
+      throw new Error(
+        "Telefone do cliente é obrigatório para gerar PIX na Witetec."
+      );
+    }
+
+    // ── Validação de valor ────────────────────────────────────────────────────
     const amountInCents = Math.round(params.amount * 100);
     if (amountInCents < 100) {
       throw new Error(
@@ -64,12 +85,9 @@ export const WitetecProvider: PixProvider = {
       );
     }
 
-    const expiresAt = new Date(
-      Date.now() + params.expiresInMinutes * 60 * 1000
-    );
+    const expiresAt = new Date(Date.now() + params.expiresInMinutes * 60 * 1000);
 
-    const phone = (params.customer?.phone ?? "").replace(/\D/g, "") || "00000000000";
-
+    // ── Payload ───────────────────────────────────────────────────────────────
     const body: Record<string, unknown> = {
       amount: amountInCents,
       method: "PIX",
@@ -79,9 +97,9 @@ export const WitetecProvider: PixProvider = {
       customer: {
         name: params.customer?.name || "Cliente",
         email: params.customer?.email || "",
-        phone,
+        phone: phoneRaw,
         documentType,
-        document: docRaw || "00000000000",
+        document: docRaw,
       },
       items: [
         {
@@ -100,7 +118,16 @@ export const WitetecProvider: PixProvider = {
     };
 
     console.log("[WITETEC] REQUEST BODY ────────────────────────────────────");
-    console.log(JSON.stringify({ ...body, customer: { ...(body.customer as object), document: "***" } }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          ...body,
+          customer: { ...(body.customer as object), document: "***" },
+        },
+        null,
+        2
+      )
+    );
     console.log("──────────────────────────────────────────────────────────");
 
     let response;
@@ -119,37 +146,50 @@ export const WitetecProvider: PixProvider = {
     }
 
     console.log("[WITETEC] RESPONSE BODY ───────────────────────────────────");
-    console.log("  Status :", response.status);
+    console.log("  HTTP Status :", response.status);
     console.log(JSON.stringify(response.data, null, 2));
     console.log("──────────────────────────────────────────────────────────");
 
-    // Resposta oficial: { status: true, data: { id, pix: { qrcode, qrcodeUrl, expirationDate } } }
+    // ── Validação da resposta ─────────────────────────────────────────────────
     const envelope = response.data as Record<string, unknown>;
     const data = (envelope?.data ?? envelope) as Record<string, unknown>;
-    const pix = (data?.pix ?? {}) as Record<string, unknown>;
+    const transactionStatus = String(data?.status ?? "").toUpperCase();
 
-    const txid = String(data?.id ?? params.orderId);
-
-    // Na resposta de criação: copyPaste é null — usar qrcode ou qrcodeUrl (ambos são a string PIX)
-    const qrCodeText = String(
-      pix?.qrcode ?? pix?.qrcodeUrl ?? pix?.copyPaste ?? ""
-    );
-
-    if (!qrCodeText) {
+    // A Witetec pode retornar HTTP 200/201 com status FAILED internamente.
+    // Tratar isso como falha real — não como ausência de campo.
+    if (transactionStatus && transactionStatus !== "PENDING" && transactionStatus !== "WAITING_PAYMENT") {
       throw new Error(
-        "Witetec não retornou qrcode/qrcodeUrl. Resposta: " + JSON.stringify(envelope)
+        `Witetec criou a transação mas não gerou PIX. Status: ${transactionStatus}. ` +
+          `ID: ${data?.id ?? "n/a"}. Resposta: ${JSON.stringify(data)}`
       );
     }
 
+    const pix = (data?.pix ?? {}) as Record<string, unknown>;
+
+    // qrcode e qrcodeUrl contêm a string PIX na resposta de criação.
+    // copyPaste pode vir preenchido em alguns cenários.
+    const qrCodeText = [pix?.qrcode, pix?.qrcodeUrl, pix?.copyPaste]
+      .map((v) => String(v ?? "").trim())
+      .find((v) => v.length > 0) ?? "";
+
+    if (!qrCodeText) {
+      throw new Error(
+        `Witetec retornou status ${transactionStatus} mas PIX está vazio. ` +
+          `Resposta: ${JSON.stringify(envelope)}`
+      );
+    }
+
+    const txid = String(data?.id ?? params.orderId);
     const rawExpiration = pix?.expirationDate;
-    const resolvedExpiration =
-      rawExpiration ? new Date(String(rawExpiration)) : expiresAt;
+    const resolvedExpiration = rawExpiration
+      ? new Date(String(rawExpiration))
+      : expiresAt;
 
     return { txid, qrCodeText, expiresAt: resolvedExpiration };
   },
 
   verifyWebhook(_req: Request): boolean {
-    // Witetec não documenta assinatura de webhook — aceitamos e logamos tudo.
+    // Witetec não documenta assinatura de webhook — aceitar e auditar.
     // Revisar quando a Witetec publicar mecanismo de validação.
     return true;
   },
