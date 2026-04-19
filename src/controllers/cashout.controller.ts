@@ -324,6 +324,68 @@ function resolveUserPixProvider(_user?: any): {
   };
 }
 
+// Remove máscara/pontuação da chave antes de salvar (CPF 123.456.789-01 → 12345678901).
+function sanitizePixKey(key: string, type: PixKeyType): string {
+  const raw = key.trim();
+  if (type === "cpf" || type === "cnpj") return raw.replace(/\D/g, "");
+  if (type === "phone") {
+    const hasPlus = raw.startsWith("+");
+    return (hasPlus ? "+" : "") + raw.replace(/\D/g, "");
+  }
+  return raw;
+}
+
+// Valida CPF pelos dígitos verificadores oficiais (rejeita sequências repetidas e CPFs falsos).
+function isValidCPF(cpf: string): boolean {
+  const d = cpf.replace(/\D/g, "");
+  if (d.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(d)) return false; // bloqueia 11111111111, 00000000000 etc
+
+  let sum = 0;
+  for (let i = 0; i < 9; i++) sum += parseInt(d[i]) * (10 - i);
+  let remainder = (sum * 10) % 11;
+  if (remainder === 10 || remainder === 11) remainder = 0;
+  if (remainder !== parseInt(d[9])) return false;
+
+  sum = 0;
+  for (let i = 0; i < 10; i++) sum += parseInt(d[i]) * (11 - i);
+  remainder = (sum * 10) % 11;
+  if (remainder === 10 || remainder === 11) remainder = 0;
+  if (remainder !== parseInt(d[10])) return false;
+
+  return true;
+}
+
+// Valida o formato da chave conforme o tipo detectado.
+function validatePixKeyFormat(key: string, type: PixKeyType): string | null {
+  const raw = key.trim();
+  const digits = raw.replace(/\D/g, "");
+
+  if (type === "cpf") {
+    if (!/^\d{11}$/.test(digits))
+      return "Chave CPF inválida — deve conter exatamente 11 dígitos numéricos.";
+    if (!isValidCPF(digits))
+      return "CPF inválido — verifique os dígitos verificadores.";
+  }
+  if (type === "cnpj") {
+    if (!/^\d{14}$/.test(digits))
+      return "Chave CNPJ inválida — deve conter exatamente 14 dígitos numéricos.";
+  }
+  if (type === "email") {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw))
+      return "E-mail inválido.";
+  }
+  if (type === "phone") {
+    if (!/^\+?\d{10,13}$/.test(raw.replace(/[\s().-]/g, "")))
+      return "Telefone inválido — use o formato +5511999999999.";
+  }
+  if (type === "random") {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw))
+      return "Chave aleatória inválida — formato UUID esperado.";
+  }
+  return null;
+}
+
 // Detecta o tipo da chave PIX com base exclusivamente no formato do valor.
 // O backend é a fonte da verdade — o valor enviado pelo frontend é apenas auditado.
 function detectPixKeyType(key: string): PixKeyType {
@@ -382,9 +444,8 @@ export const createCashoutRequest = async (
     if (normalizedFrontendType && normalizedFrontendType !== pixKeyType) {
       console.warn(`[PIX TYPE DETECTED] DIVERGÊNCIA — frontend: "${pixKeyTypeFrontend}" | detectado: "${pixKeyType}" | usando detectado`);
     } else {
-      console.log(`[PIX TYPE DETECTED] inputKey: "${pixKey}" | detectedType: "${pixKeyType}" | frontendType: "${pixKeyTypeFrontend || "(não informado)"}"`)
+      console.log(`[PIX TYPE DETECTED] inputKey: "${pixKey}" | detectedType: "${pixKeyType}" | frontendType: "${pixKeyTypeFrontend || "(não informado)"}"`);
     }
-
 
     if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
       res.status(400).json({ status: false, msg: "Valor de saque inválido." });
@@ -393,6 +454,14 @@ export const createCashoutRequest = async (
 
     if (!pixKey) {
       res.status(400).json({ status: false, msg: "Chave PIX obrigatória." });
+      return;
+    }
+
+    // Sanitiza a chave (remove máscara) e valida o formato por tipo detectado
+    const cleanPixKey = sanitizePixKey(pixKey, pixKeyType);
+    const keyFormatError = validatePixKeyFormat(cleanPixKey, pixKeyType);
+    if (keyFormatError) {
+      res.status(400).json({ status: false, msg: keyFormatError });
       return;
     }
 
@@ -430,7 +499,7 @@ export const createCashoutRequest = async (
             providerIdempotencyKey: "",
             providerId: "",
             providerStatus: "pending_admin",
-            pixKey,
+            pixKey: cleanPixKey,
             pixKeyType,
             receiverName,
             receiverDocument,
