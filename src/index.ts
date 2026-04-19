@@ -6,6 +6,7 @@ import morgan from "morgan";
 
 import { connectDB } from "./config/database";
 import routes from "./routes";
+import testRoutes from "./routes/test.routes";
 
 dotenv.config();
 
@@ -38,6 +39,7 @@ app.use(express.json({ limit: "5mb" }));
 connectDB();
 
 app.use("/api", routes);
+app.use("/api/test", testRoutes);
 
 app.get("/", (_req: Request, res: Response) => {
   res.status(200).json({

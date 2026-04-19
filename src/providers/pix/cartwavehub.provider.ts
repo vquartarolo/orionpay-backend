@@ -17,7 +17,7 @@ const STATUS_PIX_URL = `${BASE_URL}/v2/finance/status-pix-copy-and-paste/`;
 let _cachedToken: string | null = null;
 let _tokenExpiresAt = 0;
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   const now = Date.now();
 
   if (_cachedToken && now < _tokenExpiresAt - 2 * 60 * 1000) {
@@ -36,11 +36,10 @@ async function getAccessToken(): Promise<string> {
   const env = process.env.RAILWAY_ENVIRONMENT ?? process.env.NODE_ENV ?? "local";
   const authBody = { email, password };
 
-  console.log("🔑 [CartWaveHub] ── AUTH REQUEST ──────────────────────────────");
-  console.log("  Ambiente :", env);
-  console.log("  URL      :", AUTH_URL);
-  console.log("  Body     :", JSON.stringify({ email, password: "***" }));
-  console.log("──────────────────────────────────────────────────────────────");
+  console.log("[LOCAL TEST] AUTH REQUEST");
+  console.log("URL:", AUTH_URL);
+  console.log("EMAIL:", email);
+  console.log("ENV:", env);
 
   let authRes;
   try {
@@ -49,24 +48,17 @@ async function getAccessToken(): Promise<string> {
     });
   } catch (err: any) {
     const res = err?.response;
-    console.error("❌ [CartWaveHub] ── AUTH ERRO ──────────────────────────────");
-    console.error("  Ambiente :", env);
-    console.error("  URL      :", AUTH_URL);
+    console.log("[LOCAL TEST] AUTH ERROR FULL:", res?.data ?? err?.message);
     console.error("  Status   :", res?.status ?? "sem resposta (rede/timeout)");
     console.error("  Headers  :", JSON.stringify(res?.headers ?? {}));
-    console.error("  Body     :", JSON.stringify(res?.data ?? err?.message, null, 2));
-    console.error("────────────────────────────────────────────────────────────");
     throw new Error(
       `CartWaveHub auth falhou (${res?.status ?? "sem resposta"}): ` +
         JSON.stringify(res?.data ?? err?.message)
     );
   }
 
-  console.log("✅ [CartWaveHub] ── AUTH RESPOSTA ─────────────────────────────");
-  console.log("  Status   :", authRes.status);
-  console.log("  Headers  :", JSON.stringify(authRes.headers));
-  console.log("  Body     :", JSON.stringify(authRes.data, null, 2));
-  console.log("────────────────────────────────────────────────────────────");
+  console.log("[LOCAL TEST] AUTH RESPONSE STATUS:", authRes.status);
+  console.log("[LOCAL TEST] AUTH RESPONSE BODY:", authRes.data);
 
   const authData = authRes.data as Record<string, unknown>;
   const token = String(

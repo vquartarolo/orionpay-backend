@@ -1,5 +1,5 @@
+import "./config/env"; // DEVE ser o primeiro import — carrega .env antes de qualquer outro módulo
 import express, { Request, Response, NextFunction } from "express";
-import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -7,8 +7,7 @@ import path from "path";
 
 import { connectDB } from "./config/database";
 import routes from "./routes";
-
-dotenv.config();
+import testRoutes from "./routes/test.routes";
 
 const app = express();
 
@@ -74,6 +73,7 @@ connectDB();
 /* -------------------------------------------------------
 🚀 ROTAS
 -------------------------------------------------------- */
+app.use("/api/test", testRoutes);
 app.use("/api", routes);
 app.use("/", routes);
 
