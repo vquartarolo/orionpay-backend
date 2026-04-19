@@ -7,7 +7,8 @@
       "WebFetch(domain:doc.witetec.com)",
       "Bash(xargs ls *)",
       "Bash(npm install *)",
-      "Bash(grep -E \"\\\\.\\(env|md\\)$|package.json$\")"
+      "Bash(grep -E \"\\\\.\\(env|md\\)$|package.json$\")",
+      "Bash(node -e \"const p = require\\('./package.json'\\); const inDeps = 'axios' in p.dependencies; const inDev = 'axios' in p.devDependencies; console.log\\('axios in dependencies:', inDeps, '| in devDependencies:', inDev\\);\")"
     ]
   }
 }

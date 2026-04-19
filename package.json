@@ -19,6 +19,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "axios": "^1.7.9",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
@@ -53,7 +54,6 @@
     "@types/qrcode": "^1.5.6",
     "@types/speakeasy": "^2.0.10",
     "@types/ua-parser-js": "^0.7.39",
-    "axios": "^1.7.9",
     "nodemon": "^3.1.9",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3"

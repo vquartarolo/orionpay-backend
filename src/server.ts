@@ -17,20 +17,24 @@ app.set("trust proxy", 1);
 /* -------------------------------------------------------
 🌐 CORS
 -------------------------------------------------------- */
+const allowedOrigins = new Set<string>(
+  [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    process.env.FRONTEND_URL,
+    process.env.CORS_ORIGIN,
+  ].filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+);
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      const allowedOrigins = [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-      ];
-
-      if (!origin || allowedOrigins.includes(origin)) {
+      // sem origin = requisição server-to-server (webhooks, health checks)
+      if (!origin || allowedOrigins.has(origin)) {
         callback(null, true);
         return;
       }
-
       callback(new Error("Origem não permitida pelo CORS"));
     },
     credentials: true,
