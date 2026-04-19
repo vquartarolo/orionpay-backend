@@ -514,8 +514,9 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
       expiresInMinutes: safeExpiresInMinutes,
       orderId: externalReference,
       customer: {
-        name: req.body?.customer?.name || "Cliente",
-        email: req.body?.customer?.email || "",
+        name: req.body?.customer?.name || user.name || "Cliente",
+        email: req.body?.customer?.email || user.email || "",
+        phone: req.body?.customer?.phone || (user as any).phone || "",
         document: onlyNumbers(customerDocumentRaw),
       },
     });

@@ -56,23 +56,30 @@ export const WitetecProvider: PixProvider = {
     const docRaw = params.customer?.document?.replace(/\D/g, "") ?? "";
     const documentType = docRaw.length === 14 ? "CNPJ" : "CPF";
 
-    // Witetec usa centavos
+    // Witetec usa centavos — mínimo: 100 (R$1,00)
     const amountInCents = Math.round(params.amount * 100);
+    if (amountInCents < 100) {
+      throw new Error(
+        `Witetec rejeita valores abaixo de R$1,00. Enviado: ${amountInCents} centavos (R$${params.amount}).`
+      );
+    }
 
     const expiresAt = new Date(
       Date.now() + params.expiresInMinutes * 60 * 1000
     );
 
+    const phone = (params.customer?.phone ?? "").replace(/\D/g, "") || "00000000000";
+
     const body: Record<string, unknown> = {
       amount: amountInCents,
       method: "PIX",
       metadata: {
-        sellerExternalRef: params.orderId, // obrigatório conforme doc oficial
+        sellerExternalRef: params.orderId,
       },
       customer: {
         name: params.customer?.name || "Cliente",
         email: params.customer?.email || "",
-        phone: params.customer?.email ? "" : "",
+        phone,
         documentType,
         document: docRaw || "00000000000",
       },
@@ -92,10 +99,8 @@ export const WitetecProvider: PixProvider = {
       "x-api-key": apiKey,
     };
 
-    console.log("[WITETEC] CREATE PIX REQUEST ──────────────────────────────");
-    console.log("  URL    :", TRANSACTIONS_URL);
-    console.log("  Amount :", amountInCents, "centavos");
-    console.log("  Order  :", params.orderId);
+    console.log("[WITETEC] REQUEST BODY ────────────────────────────────────");
+    console.log(JSON.stringify({ ...body, customer: { ...(body.customer as object), document: "***" } }, null, 2));
     console.log("──────────────────────────────────────────────────────────");
 
     let response;
@@ -103,9 +108,9 @@ export const WitetecProvider: PixProvider = {
       response = await axios.post(TRANSACTIONS_URL, body, { headers });
     } catch (err: any) {
       const res = err?.response;
-      console.error("[WITETEC] ERROR ───────────────────────────────────────");
+      console.error("[WITETEC] ERROR BODY ──────────────────────────────────");
       console.error("  Status :", res?.status ?? "sem resposta");
-      console.error("  Body   :", JSON.stringify(res?.data ?? err?.message, null, 2));
+      console.error(JSON.stringify(res?.data ?? err?.message, null, 2));
       console.error("──────────────────────────────────────────────────────");
       throw new Error(
         `Witetec createCharge falhou (${res?.status ?? "sem resposta"}): ` +
@@ -113,9 +118,9 @@ export const WitetecProvider: PixProvider = {
       );
     }
 
-    console.log("[WITETEC] CREATE PIX RESPONSE ─────────────────────────────");
+    console.log("[WITETEC] RESPONSE BODY ───────────────────────────────────");
     console.log("  Status :", response.status);
-    console.log("  Body   :", JSON.stringify(response.data, null, 2));
+    console.log(JSON.stringify(response.data, null, 2));
     console.log("──────────────────────────────────────────────────────────");
 
     // Resposta oficial: { status: true, data: { id, pix: { qrcode, qrcodeUrl, expirationDate } } }
