@@ -538,13 +538,21 @@ export const createPixTransaction = async (req: Request, res: Response): Promise
     });
 
     transaction.providerId = charge.txid;
-    transaction.providerStatus = "pending";
     transaction.expiresAt = charge.expiresAt;
+
+    // Preserva campos do pix que o webhook pode ter preenchido antes deste save
+    // (ex: paidAt, endToEndId) caso o pagamento tenha ocorrido muito rápido
     transaction.pix = {
+      ...(transaction.pix || {}),
       txid: charge.txid,
       qrCodeText: charge.qrCodeText,
       expiresAt: charge.expiresAt,
     };
+
+    // Não regride o providerStatus se o webhook já atualizou
+    if (transaction.providerStatus === "pending") {
+      transaction.providerStatus = "pending";
+    }
 
     await transaction.save();
 

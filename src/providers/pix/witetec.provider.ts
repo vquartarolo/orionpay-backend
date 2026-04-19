@@ -89,6 +89,13 @@ export const WitetecProvider: PixProvider = {
 
     // ── Payload ───────────────────────────────────────────────────────────────
     const webhookUrl = process.env.WITETEC_WEBHOOK_URL ?? "";
+    if (!webhookUrl) {
+      console.warn(
+        "[WITETEC] AVISO: WITETEC_WEBHOOK_URL não está definida no .env. " +
+          "O webhook de pagamento NÃO será enviado automaticamente pela Witetec. " +
+          "Configure a URL no painel da Witetec ou defina a variável de ambiente."
+      );
+    }
 
     const body: Record<string, unknown> = {
       amount: amountInCents,
