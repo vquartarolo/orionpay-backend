@@ -21,7 +21,7 @@ type ZendryPixPaymentResponse = {
   };
 };
 
-type PixProvider = "zendry" | "cartwavehub";
+type PixProvider = "zendry" | "cartwavehub" | "witetec";
 
 type PixKeyType = "cpf" | "cnpj" | "email" | "phone" | "random";
 
@@ -60,14 +60,35 @@ function normalizePixKeyType(value: string = ""): PixKeyType {
   return "cpf";
 }
 
-function mapZendryStatusToInternal(status: string = ""): InternalCashoutStatus {
-  const normalized = String(status || "").trim().toLowerCase();
+// Mapeamento de tipo de chave interno → formato Witetec (sempre uppercase)
+function pixKeyTypeToWitetec(type: PixKeyType): string {
+  const map: Record<PixKeyType, string> = {
+    cpf: "CPF",
+    cnpj: "CNPJ",
+    email: "EMAIL",
+    phone: "PHONE",
+    random: "EVP",
+  };
+  return map[type] ?? "CPF";
+}
 
-  if (["completed", "paid", "success"].includes(normalized)) {
+// Status de saque unificado (suporta Zendry e Witetec)
+function mapWithdrawalProviderStatus(status: string = ""): InternalCashoutStatus {
+  const s = String(status || "").trim().toUpperCase();
+
+  if (
+    ["COMPLETED", "PAID", "SUCCESS", "WITHDRAWAL_PAID"].includes(s)
+  ) {
     return "completed";
   }
 
-  if (["failed", "error", "cancelled", "canceled", "rejected"].includes(normalized)) {
+  if (
+    [
+      "FAILED", "ERROR", "CANCELLED", "CANCELED", "REJECTED",
+      "WITHDRAWAL_FAILED", "WITHDRAWAL_CANCELED", "WITHDRAWAL_CANCELLED",
+      "WITHDRAWAL_BLOCKED", "WITHDRAWAL_REFUNDED",
+    ].includes(s)
+  ) {
     return "failed";
   }
 
@@ -121,10 +142,7 @@ async function getZendryAccessToken(): Promise<{
     throw new Error("ZENDRY_ACCESS_TOKEN_NOT_RETURNED");
   }
 
-  return {
-    accessToken,
-    tokenType,
-  };
+  return { accessToken, tokenType };
 }
 
 async function sendPixCashoutToZendry(input: {
@@ -181,6 +199,84 @@ async function sendPixCashoutToZendry(input: {
   };
 }
 
+async function sendPixCashoutToWitetec(input: {
+  amount: number;
+  pixKey: string;
+  pixKeyType: PixKeyType;
+  cashoutId: string;
+}) {
+  const apiKey = process.env.WITETEC_API_KEY ?? "";
+  if (!apiKey) throw new Error("WITETEC_API_KEY_NOT_CONFIGURED");
+
+  const baseUrl = (process.env.WITETEC_BASE_URL ?? "https://api.witetec.net").replace(/\/$/, "");
+  const withdrawalUrl = `${baseUrl}/withdrawals`;
+
+  const amountInCents = Math.round(Number(input.amount) * 100);
+
+  if (amountInCents < 500) {
+    throw new Error(
+      `WITETEC_AMOUNT_TOO_LOW: mínimo R$5,00. Enviado: ${amountInCents} centavos (R$${input.amount}).`
+    );
+  }
+
+  const payload: Record<string, unknown> = {
+    amount: amountInCents,
+    pixKey: input.pixKey,
+    pixKeyType: pixKeyTypeToWitetec(input.pixKeyType),
+    method: "PIX",
+    metadata: {
+      sellerExternalRef: input.cashoutId,
+    },
+  };
+
+  console.log("[WITETEC PAYOUT] REQUEST ──────────────────────────────────────");
+  console.log("  URL    :", withdrawalUrl);
+  console.log("  Amount :", amountInCents, "centavos");
+  console.log("  PixKey :", input.pixKey);
+  console.log("  KeyType:", pixKeyTypeToWitetec(input.pixKeyType));
+  console.log("  RefId  :", input.cashoutId);
+  console.log("──────────────────────────────────────────────────────────────");
+
+  let response;
+  try {
+    response = await axios.post(withdrawalUrl, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      timeout: 30000,
+    });
+  } catch (err: any) {
+    const res = err?.response;
+    console.error("[WITETEC PAYOUT] ERROR ────────────────────────────────────");
+    console.error("  Status :", res?.status ?? "sem resposta");
+    console.error(JSON.stringify(res?.data ?? err?.message, null, 2));
+    console.error("──────────────────────────────────────────────────────────");
+    throw new Error(
+      `Witetec withdrawal falhou (${res?.status ?? "sem resposta"}): ` +
+        JSON.stringify(res?.data ?? err?.message)
+    );
+  }
+
+  console.log("[WITETEC PAYOUT] RESPONSE ─────────────────────────────────────");
+  console.log("  HTTP Status :", response.status);
+  console.log(JSON.stringify(response.data, null, 2));
+  console.log("──────────────────────────────────────────────────────────────");
+
+  const envelope = response.data as Record<string, unknown>;
+  const data = ((envelope?.data ?? envelope) as Record<string, unknown>);
+  const witetecId = String(data?.id ?? "").trim();
+  const witetecStatus = String(data?.status ?? "WITHDRAWAL_PENDING").trim();
+
+  return {
+    provider: "witetec" as PixProvider,
+    providerId: witetecId,
+    providerStatus: witetecStatus,
+    providerReference: input.cashoutId,
+    providerIdempotencyKey: "",
+  };
+}
+
 async function sendPixCashout(
   provider: PixProvider,
   input: {
@@ -196,6 +292,10 @@ async function sendPixCashout(
     return sendPixCashoutToZendry(input);
   }
 
+  if (provider === "witetec") {
+    return sendPixCashoutToWitetec(input);
+  }
+
   if (provider === "cartwavehub") {
     throw new Error("CARTWAVE_NOT_IMPLEMENTED");
   }
@@ -203,23 +303,33 @@ async function sendPixCashout(
   throw new Error("INVALID_PROVIDER");
 }
 
+// Resolve o provider de payout: lê PIX_PROVIDER do env como padrão global,
+// depois considera configuração individual do usuário.
 function resolveUserPixProvider(user: any): {
   provider: PixProvider;
   allowFallback: boolean;
   fallbackProvider?: PixProvider;
   allowedProviders: PixProvider[];
 } {
+  const globalEnvProvider = (process.env.PIX_PROVIDER ?? "witetec").toLowerCase();
+  const globalDefault: PixProvider =
+    globalEnvProvider === "zendry"
+      ? "zendry"
+      : globalEnvProvider === "cartwavehub"
+        ? "cartwavehub"
+        : "witetec";
+
   const rawConfig = user?.pixPayoutConfig || {};
 
   const allowedProviders = Array.isArray(rawConfig.allowedProviders)
     ? rawConfig.allowedProviders.filter((item: unknown) =>
-        ["zendry", "cartwavehub"].includes(String(item))
+        ["zendry", "cartwavehub", "witetec"].includes(String(item))
       )
-    : ["zendry"];
+    : [globalDefault];
 
   const normalizedAllowed = (allowedProviders.length
     ? allowedProviders
-    : ["zendry"]) as PixProvider[];
+    : [globalDefault]) as PixProvider[];
 
   const defaultProvider = normalizedAllowed.includes(rawConfig.defaultProvider)
     ? (rawConfig.defaultProvider as PixProvider)
@@ -341,7 +451,7 @@ export const createCashoutRequest = async (
         releaseDate: null,
         transactionId: null,
         cashoutRequestId: cashoutId,
-        description: `Cashout ${cashoutId.toString()} aguardando autorização administrativa`,
+        description: `Saque solicitado (${cashoutId.toString()}) — aguardando autorização`,
       });
 
       wallet.log.push({
@@ -363,7 +473,7 @@ export const createCashoutRequest = async (
 
       responsePayload = {
         status: true,
-        msg: "Solicitação de saque criada e aguardando autorização do administrador.",
+        msg: "Saque solicitado com sucesso. Aguardando autorização do administrador.",
         cashoutId: cashoutId.toString(),
         cashout: {
           id: cashoutId.toString(),
@@ -780,7 +890,7 @@ export const updateCashoutStatus = async (
           cashoutId: cashout._id.toString(),
         });
 
-        const internalStatus = mapZendryStatusToInternal(providerResult.providerStatus);
+        const internalStatus = mapWithdrawalProviderStatus(providerResult.providerStatus);
 
         const finalizeSession = await mongoose.startSession();
 
@@ -789,13 +899,8 @@ export const updateCashoutStatus = async (
             const currentCashout: any = await CashoutRequest.findById(id).session(finalizeSession);
             const wallet = await Wallet.findOne({ userId: cashout.userId }).session(finalizeSession);
 
-            if (!currentCashout) {
-              throw new Error("CASHOUT_NOT_FOUND");
-            }
-
-            if (!wallet) {
-              throw new Error("WALLET_NOT_FOUND");
-            }
+            if (!currentCashout) throw new Error("CASHOUT_NOT_FOUND");
+            if (!wallet) throw new Error("WALLET_NOT_FOUND");
 
             const cashoutObjectId = currentCashout._id as Types.ObjectId;
 
@@ -803,9 +908,7 @@ export const updateCashoutStatus = async (
               (item) => item.cashoutRequestId?.toString() === cashoutObjectId.toString()
             );
 
-            if (frozenIndex === -1) {
-              throw new Error("FROZEN_ENTRY_NOT_FOUND");
-            }
+            if (frozenIndex === -1) throw new Error("FROZEN_ENTRY_NOT_FOUND");
 
             currentCashout.provider = providerResult.provider;
             currentCashout.providerId = providerResult.providerId;
@@ -844,7 +947,7 @@ export const updateCashoutStatus = async (
                 method: "pix",
                 amount: Number(currentCashout.amount || 0),
                 status: "pending",
-                description: `Saque PIX enviado ao provedor (${cashoutObjectId.toString()})`,
+                description: `Saque PIX enviado ao provedor — aguardando confirmação (${cashoutObjectId.toString()})`,
                 createdAt: new Date(),
                 security: {
                   createdAt: new Date(),
@@ -886,10 +989,10 @@ export const updateCashoutStatus = async (
               status: true,
               msg:
                 currentCashout.status === "completed"
-                  ? "Solicitação aprovada e saque PIX concluído."
+                  ? "Saque PIX concluído com sucesso."
                   : currentCashout.status === "processing"
-                    ? "Solicitação aprovada e saque PIX enviado para processamento."
-                    : "Solicitação aprovada, mas o provedor retornou falha. O saldo foi estornado.",
+                    ? "Saque PIX enviado ao provedor — aguardando confirmação de pagamento."
+                    : "Aprovação registrada, mas o provedor retornou falha. O saldo foi estornado.",
               cashout: {
                 id: cashoutObjectId.toString(),
                 status: currentCashout.status,
@@ -922,13 +1025,8 @@ export const updateCashoutStatus = async (
             const currentCashout: any = await CashoutRequest.findById(id).session(rollbackSession);
             const wallet = await Wallet.findOne({ userId: cashout.userId }).session(rollbackSession);
 
-            if (!currentCashout) {
-              throw new Error("CASHOUT_NOT_FOUND");
-            }
-
-            if (!wallet) {
-              throw new Error("WALLET_NOT_FOUND");
-            }
+            if (!currentCashout) throw new Error("CASHOUT_NOT_FOUND");
+            if (!wallet) throw new Error("WALLET_NOT_FOUND");
 
             const cashoutObjectId = currentCashout._id as Types.ObjectId;
 
@@ -936,9 +1034,7 @@ export const updateCashoutStatus = async (
               (item) => item.cashoutRequestId?.toString() === cashoutObjectId.toString()
             );
 
-            if (frozenIndex === -1) {
-              throw new Error("FROZEN_ENTRY_NOT_FOUND");
-            }
+            if (frozenIndex === -1) throw new Error("FROZEN_ENTRY_NOT_FOUND");
 
             const frozenAmount = Number(wallet.balance.unAvailable[frozenIndex].amount || 0);
 
@@ -974,12 +1070,16 @@ export const updateCashoutStatus = async (
             await currentCashout.save({ session: rollbackSession });
             await wallet.save({ session: rollbackSession });
 
+            const errorMsg = providerError instanceof Error ? providerError.message : "";
+
             responsePayload = {
               status: false,
               msg:
-                currentCashout.providerStatus === "CARTWAVE_NOT_IMPLEMENTED"
+                errorMsg === "CARTWAVE_NOT_IMPLEMENTED"
                   ? "CartwaveHub ainda não foi implementada no backend. O saldo foi estornado."
-                  : "Falha ao enviar saque PIX ao provedor. O saldo foi estornado.",
+                  : errorMsg.startsWith("WITETEC_AMOUNT_TOO_LOW")
+                    ? `Valor abaixo do mínimo permitido pela Witetec (R$5,00). O saldo foi estornado.`
+                    : "Falha ao enviar saque PIX ao provedor. O saldo foi estornado.",
               cashout: {
                 id: cashoutObjectId.toString(),
                 status: currentCashout.status,
@@ -1043,26 +1143,22 @@ export const updateCashoutStatus = async (
       }
 
       if (error.message === "ZENDRY_BASE_URL_NOT_CONFIGURED") {
-        res.status(500).json({
-          status: false,
-          msg: "ZENDRY_BASE_URL não configurada.",
-        });
+        res.status(500).json({ status: false, msg: "ZENDRY_BASE_URL não configurada." });
         return;
       }
 
       if (error.message === "ZENDRY_CREDENTIALS_NOT_CONFIGURED") {
-        res.status(500).json({
-          status: false,
-          msg: "Credenciais da Zendry não configuradas.",
-        });
+        res.status(500).json({ status: false, msg: "Credenciais da Zendry não configuradas." });
         return;
       }
 
       if (error.message === "ZENDRY_ACCESS_TOKEN_NOT_RETURNED") {
-        res.status(500).json({
-          status: false,
-          msg: "A Zendry não retornou access token.",
-        });
+        res.status(500).json({ status: false, msg: "A Zendry não retornou access token." });
+        return;
+      }
+
+      if (error.message === "WITETEC_API_KEY_NOT_CONFIGURED") {
+        res.status(500).json({ status: false, msg: "WITETEC_API_KEY não configurada." });
         return;
       }
 
@@ -1075,10 +1171,7 @@ export const updateCashoutStatus = async (
       }
 
       if (error.message === "INVALID_PROVIDER") {
-        res.status(500).json({
-          status: false,
-          msg: "Provider PIX inválido para saque.",
-        });
+        res.status(500).json({ status: false, msg: "Provider PIX inválido para saque." });
         return;
       }
     }

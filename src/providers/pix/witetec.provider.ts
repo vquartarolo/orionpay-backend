@@ -87,16 +87,28 @@ export const WitetecProvider: PixProvider = {
 
     const expiresAt = new Date(Date.now() + params.expiresInMinutes * 60 * 1000);
 
-    // ── Payload ───────────────────────────────────────────────────────────────
+    // ── Aviso de configuração de webhook ─────────────────────────────────────
+    // IMPORTANTE: a Witetec NÃO aceita postbackUrl no body do request de criação.
+    // O webhook deve ser configurado diretamente no painel da Witetec em:
+    // Configurações → Webhooks → URL: https://seu-backend/api/webhooks/witetec
+    // A variável WITETEC_WEBHOOK_URL serve apenas como lembrete de qual URL usar.
     const webhookUrl = process.env.WITETEC_WEBHOOK_URL ?? "";
     if (!webhookUrl) {
       console.warn(
         "[WITETEC] AVISO: WITETEC_WEBHOOK_URL não está definida no .env. " +
-          "O webhook de pagamento NÃO será enviado automaticamente pela Witetec. " +
-          "Configure a URL no painel da Witetec ou defina a variável de ambiente."
+          "Configure a URL de webhook MANUALMENTE no painel da Witetec: " +
+          "https://orionpay-backend-production.up.railway.app/api/webhooks/witetec"
+      );
+    } else {
+      console.log(
+        "[WITETEC] Webhook URL configurada (registrar no painel Witetec se ainda não feito):",
+        webhookUrl
       );
     }
 
+    // ── Payload ───────────────────────────────────────────────────────────────
+    // NOTA: postbackUrl NÃO é um campo aceito pela Witetec no request.
+    // O webhook é configurado no painel deles, não por transação.
     const body: Record<string, unknown> = {
       amount: amountInCents,
       method: "PIX",
@@ -119,7 +131,6 @@ export const WitetecProvider: PixProvider = {
           externalRef: params.orderId,
         },
       ],
-      ...(webhookUrl ? { postbackUrl: webhookUrl } : {}),
     };
 
     const headers = {
@@ -165,8 +176,6 @@ export const WitetecProvider: PixProvider = {
     const data = (envelope?.data ?? envelope) as Record<string, unknown>;
     const transactionStatus = String(data?.status ?? "").toUpperCase();
 
-    // A Witetec pode retornar HTTP 200/201 com status FAILED internamente.
-    // Tratar isso como falha real — não como ausência de campo.
     if (transactionStatus && transactionStatus !== "PENDING" && transactionStatus !== "WAITING_PAYMENT") {
       throw new Error(
         `Witetec criou a transação mas não gerou PIX. Status: ${transactionStatus}. ` +
@@ -176,8 +185,6 @@ export const WitetecProvider: PixProvider = {
 
     const pix = (data?.pix ?? {}) as Record<string, unknown>;
 
-    // qrcode e qrcodeUrl contêm a string PIX na resposta de criação.
-    // copyPaste pode vir preenchido em alguns cenários.
     const qrCodeText = [pix?.qrcode, pix?.qrcodeUrl, pix?.copyPaste]
       .map((v) => String(v ?? "").trim())
       .find((v) => v.length > 0) ?? "";
@@ -200,7 +207,6 @@ export const WitetecProvider: PixProvider = {
 
   verifyWebhook(_req: Request): boolean {
     // Witetec não documenta assinatura de webhook — aceitar e auditar.
-    // Revisar quando a Witetec publicar mecanismo de validação.
     return true;
   },
 

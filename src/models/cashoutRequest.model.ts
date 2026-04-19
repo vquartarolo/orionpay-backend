@@ -11,7 +11,7 @@ export type CashoutStatus =
 
 export type CashoutMethod = "pix";
 
-export type CashoutProvider = "internal" | "zendry";
+export type CashoutProvider = "internal" | "zendry" | "witetec";
 
 export type PixKeyType =
   | "cpf"
@@ -115,7 +115,7 @@ const cashoutRequestSchema = new Schema<ICashoutRequest>(
 
     provider: {
       type: String,
-      enum: ["internal", "zendry"],
+      enum: ["internal", "zendry", "witetec"],
       default: "internal",
       required: true,
       index: true,
