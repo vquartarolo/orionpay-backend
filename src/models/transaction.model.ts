@@ -190,7 +190,7 @@ const transactionSchema = new Schema<ITransaction>(
 
     provider: {
       type: String,
-      enum: ["internal", "cartwave", "cartwavehub", "zendry", "nowpayments", "7trust"],
+      enum: ["internal", "cartwave", "cartwavehub", "zendry", "nowpayments", "7trust", "witetec"],
       required: true,
       default: "internal",
       index: true,
