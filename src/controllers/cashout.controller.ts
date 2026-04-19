@@ -303,50 +303,54 @@ async function sendPixCashout(
   throw new Error("INVALID_PROVIDER");
 }
 
-// Resolve o provider de payout: lê PIX_PROVIDER do env como padrão global,
-// depois considera configuração individual do usuário.
-function resolveUserPixProvider(user: any): {
+// PIX_PROVIDER do .env é override absoluto — ignora configuração do usuário no MongoDB.
+function resolveUserPixProvider(_user?: any): {
   provider: PixProvider;
   allowFallback: boolean;
   fallbackProvider?: PixProvider;
   allowedProviders: PixProvider[];
 } {
-  const globalEnvProvider = (process.env.PIX_PROVIDER ?? "witetec").toLowerCase();
-  const globalDefault: PixProvider =
-    globalEnvProvider === "zendry"
-      ? "zendry"
-      : globalEnvProvider === "cartwavehub"
-        ? "cartwavehub"
-        : "witetec";
+  const env = (process.env.PIX_PROVIDER ?? "witetec").toLowerCase();
+  const provider: PixProvider =
+    env === "zendry" ? "zendry" : env === "cartwavehub" ? "cartwavehub" : "witetec";
 
-  const rawConfig = user?.pixPayoutConfig || {};
-
-  const allowedProviders = Array.isArray(rawConfig.allowedProviders)
-    ? rawConfig.allowedProviders.filter((item: unknown) =>
-        ["zendry", "cartwavehub", "witetec"].includes(String(item))
-      )
-    : [globalDefault];
-
-  const normalizedAllowed = (allowedProviders.length
-    ? allowedProviders
-    : [globalDefault]) as PixProvider[];
-
-  const defaultProvider = normalizedAllowed.includes(rawConfig.defaultProvider)
-    ? (rawConfig.defaultProvider as PixProvider)
-    : normalizedAllowed[0];
-
-  const fallbackProvider =
-    rawConfig.fallbackProvider &&
-    normalizedAllowed.includes(rawConfig.fallbackProvider)
-      ? (rawConfig.fallbackProvider as PixProvider)
-      : undefined;
+  console.log(`[CREATE CASHOUT] PROVIDER resolved from PIX_PROVIDER env: "${provider}"`);
 
   return {
-    provider: defaultProvider,
-    allowFallback: Boolean(rawConfig.allowFallback),
-    fallbackProvider,
-    allowedProviders: normalizedAllowed,
+    provider,
+    allowFallback: false,
+    fallbackProvider: undefined,
+    allowedProviders: [provider],
   };
+}
+
+// Auto-detecta o tipo da chave PIX a partir do valor informado.
+function detectPixKeyType(key: string): PixKeyType {
+  const raw = key.trim();
+  const digits = raw.replace(/\D/g, "");
+
+  // Email
+  if (raw.includes("@")) return "email";
+
+  // CNPJ (14 dígitos)
+  if (digits.length === 14) return "cnpj";
+
+  // CPF (11 dígitos)
+  if (digits.length === 11) return "cpf";
+
+  // Telefone: começa com + ou tem 10-11 dígitos com DDD
+  if (raw.startsWith("+") || digits.length === 10 || digits.length === 11) {
+    // evita confundir CPF (11 dígitos) — CPF já retornou acima
+    if (raw.startsWith("+")) return "phone";
+  }
+
+  // EVP (chave aleatória): formato UUID-like
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+    return "random";
+  }
+
+  // Default: cpf (fallback seguro)
+  return "cpf";
 }
 
 /* -------------------------------------------------------
@@ -368,13 +372,17 @@ export const createCashoutRequest = async (
 
     const rawAmount = Number(req.body?.amount);
     const pixKey = String(req.body?.pixKey || req.body?.pix_key || "").trim();
-    const pixKeyType = normalizePixKeyType(
-      String(req.body?.pixKeyType || req.body?.pix_key_type || "cpf")
-    );
+    const pixKeyTypeRaw = String(req.body?.pixKeyType || req.body?.pix_key_type || "").trim();
+    const pixKeyType = pixKeyTypeRaw
+      ? normalizePixKeyType(pixKeyTypeRaw)
+      : detectPixKeyType(pixKey);
     const receiverName = String(req.body?.receiverName || req.body?.name || "").trim();
     const receiverDocument = onlyNumbers(
       String(req.body?.receiverDocument || req.body?.document || "")
     );
+
+    console.log(`[CREATE CASHOUT] PIX KEY TYPE: "${pixKeyType}" (chave: "${pixKey}"${pixKeyTypeRaw ? `, informado: "${pixKeyTypeRaw}"` : ", auto-detectado"})`);
+
 
     if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
       res.status(400).json({ status: false, msg: "Valor de saque inválido." });
@@ -526,11 +534,15 @@ export const listCashoutRequests = async (
   res: Response
 ): Promise<void> => {
   try {
-    const pendingCashouts = await CashoutRequest.find({
-      status: { $in: ["pending_admin", "processing", "approved_admin"] },
-    })
+    const query = { status: { $in: ["pending_admin", "processing", "approved_admin"] } };
+    console.log("[ADMIN CASHOUT LIST] REQUEST received");
+    console.log("[ADMIN CASHOUT LIST] QUERY:", JSON.stringify(query));
+
+    const pendingCashouts = await CashoutRequest.find(query)
       .populate("userId", "name email role accountStatus pixPayoutConfig")
       .sort({ createdAt: -1 });
+
+    console.log(`[ADMIN CASHOUT LIST] RESULT COUNT: ${pendingCashouts.length}`);
 
     const pendingIds = pendingCashouts.map((item: any) =>
       (item._id as Types.ObjectId).toString()
