@@ -4,7 +4,8 @@
       "Bash(npx tsc *)",
       "WebFetch(domain:cartwavehub.com.br)",
       "WebFetch(domain:cartwave-prod.readme.io)",
-      "WebFetch(domain:doc.witetec.com)"
+      "WebFetch(domain:doc.witetec.com)",
+      "Bash(xargs ls *)"
     ]
   }
 }
