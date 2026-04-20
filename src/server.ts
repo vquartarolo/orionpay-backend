@@ -17,29 +17,51 @@ app.set("trust proxy", 1);
 /* -------------------------------------------------------
 🌐 CORS
 -------------------------------------------------------- */
-const allowedOrigins = new Set<string>(
-  [
+
+// Constrói o Set de origens permitidas:
+// 1. Domínios locais fixos
+// 2. Produção conhecida (hardcoded como fallback garantido)
+// 3. Env vars FRONTEND_URL e CORS_ORIGIN — suportam múltiplos valores separados por vírgula
+function buildAllowedOrigins(): Set<string> {
+  const fixed = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
-    process.env.FRONTEND_URL,
-    process.env.CORS_ORIGIN,
-  ].filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-);
+    "https://siteorionpay.vercel.app",
+  ];
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // sem origin = requisição server-to-server (webhooks, health checks)
-      if (!origin || allowedOrigins.has(origin)) {
-        callback(null, true);
-        return;
-      }
-      callback(new Error("Origem não permitida pelo CORS"));
-    },
-    credentials: true,
-  })
-);
+  const fromEnv = [
+    ...(process.env.FRONTEND_URL ?? "").split(","),
+    ...(process.env.CORS_ORIGIN ?? "").split(","),
+  ];
+
+  return new Set(
+    [...fixed, ...fromEnv]
+      .map((v) => v.trim().replace(/\/$/, "")) // remove espaços e barra final
+      .filter((v) => v.length > 0)
+  );
+}
+
+const allowedOrigins = buildAllowedOrigins();
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // sem origin = requisição server-to-server (webhooks, health checks, Railway)
+    if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    console.warn(`[CORS] Origem bloqueada: ${origin}`);
+    callback(new Error("Origem não permitida pelo CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+// Responde preflight OPTIONS em todas as rotas antes de qualquer outro middleware
+app.options("*", cors(corsOptions));
+app.use(cors(corsOptions));
 
 /* -------------------------------------------------------
 🛡 Segurança básica
