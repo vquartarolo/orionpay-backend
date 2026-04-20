@@ -1,4 +1,5 @@
 import { sendVerificationEmail } from "../utils/email";
+import speakeasy from "speakeasy";
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
@@ -792,6 +793,30 @@ export const changeMyPassword = async (
         msg: "A senha atual está incorreta.",
       });
       return;
+    }
+
+    if (user.twofaEnabled) {
+      const { twofaCode } = req.body;
+      if (!twofaCode || String(twofaCode).length !== 6) {
+        res.status(400).json({
+          status: false,
+          msg: "Código do autenticador é obrigatório.",
+        });
+        return;
+      }
+      const verified = speakeasy.totp.verify({
+        secret: user.twofaSecret,
+        encoding: "base32",
+        token: String(twofaCode),
+        window: 1,
+      });
+      if (!verified) {
+        res.status(400).json({
+          status: false,
+          msg: "Código do autenticador inválido.",
+        });
+        return;
+      }
     }
 
     const samePassword = await bcrypt.compare(String(newPassword), user.password);
