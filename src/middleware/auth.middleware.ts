@@ -297,10 +297,18 @@ export function requireTwoFA(
   next();
 }
 
+const SELLER_CAPABLE_ROLES: AppRole[] = [
+  "seller",
+  "admin",
+  "master",
+  "moderator",
+  "super_moderator",
+];
+
 /**
  * Guarda principal para rotas operacionais do seller.
  * Exige:
- * - role seller
+ * - role com capacidade operacional (seller, admin, master, moderator, super_moderator)
  * - accountStatus seller_active
  * - email verificado
  * - 2FA ativo
@@ -318,10 +326,10 @@ export function requireSellerAccess(
     return;
   }
 
-  if (req.authUser.role !== "seller") {
+  if (!SELLER_CAPABLE_ROLES.includes(req.authUser.role)) {
     res.status(403).json({
       status: false,
-      msg: "Apenas sellers podem realizar esta operação.",
+      msg: "Seu perfil não possui permissão para realizar esta operação.",
     });
     return;
   }

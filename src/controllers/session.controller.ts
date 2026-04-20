@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import {
   listUserSessions,
   revokeAllOtherSessions,
+  groupAndAnalyzeSessions,
+  revokeUserSession,
 } from "../services/session.service";
 
 /* -------------------------------------------------------
@@ -91,5 +93,71 @@ export const logoutOtherSessions = async (
       status: false,
       msg: "Erro interno ao encerrar outras sessões.",
     });
+  }
+};
+
+/* -------------------------------------------------------
+📦 Listar sessões agrupadas com risco
+GET /api/sessions/grouped
+-------------------------------------------------------- */
+export const getMySessionsGrouped = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    if (!req.authUser?.id || !req.authSessionId) {
+      res.status(401).json({ status: false, msg: "Não autenticado." });
+      return;
+    }
+
+    const result = await groupAndAnalyzeSessions(req.authUser.id, req.authSessionId);
+
+    res.status(200).json({
+      status: true,
+      msg: "Sessões carregadas.",
+      current: result.current,
+      groups: result.groups,
+    });
+  } catch (err) {
+    console.error("Erro ao listar sessões agrupadas:", err);
+    res.status(500).json({ status: false, msg: "Erro interno ao listar sessões." });
+  }
+};
+
+/* -------------------------------------------------------
+🚫 Encerrar sessão individual
+DELETE /api/sessions/:id
+-------------------------------------------------------- */
+export const revokeMySession = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    if (!req.authUser?.id || !req.authSessionId) {
+      res.status(401).json({ status: false, msg: "Não autenticado." });
+      return;
+    }
+
+    const { id } = req.params;
+    if (!id) {
+      res.status(400).json({ status: false, msg: "ID da sessão é obrigatório." });
+      return;
+    }
+
+    const revoked = await revokeUserSession(req.authUser.id, id, req.authSessionId);
+
+    if (!revoked) {
+      res.status(404).json({ status: false, msg: "Sessão não encontrada." });
+      return;
+    }
+
+    res.status(200).json({ status: true, msg: "Sessão encerrada com sucesso." });
+  } catch (err: any) {
+    if (String(err?.message || "").includes("sessão atual")) {
+      res.status(400).json({ status: false, msg: err.message });
+      return;
+    }
+    console.error("Erro ao encerrar sessão:", err);
+    res.status(500).json({ status: false, msg: "Erro interno ao encerrar sessão." });
   }
 };

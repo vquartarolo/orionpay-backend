@@ -643,3 +643,145 @@ export async function validateActiveSession(
 
   return session;
 }
+
+/* -------------------------------------------------------
+📦 Agrupamento inteligente de sessões
+-------------------------------------------------------- */
+export interface GroupedSession {
+  groupKey: string;
+  deviceLabel: string;
+  browser: string;
+  os: string;
+  ip: string;
+  locationLabel: string;
+  country: string;
+  countryCode: string;
+  count: number;
+  lastSeenAt: Date;
+  createdAt: Date;
+  riskLevel: "low" | "medium" | "high";
+  riskReasons: string[];
+  sessions: ListedSession[];
+  isCurrent: boolean;
+}
+
+export interface GroupedSessionsResult {
+  current: ListedSession | null;
+  groups: GroupedSession[];
+}
+
+function buildGroupKey(s: ListedSession): string {
+  return `${s.ip}|${s.browser}|${s.os}`;
+}
+
+function assessGroupRisk(
+  group: { ip: string; country: string; isCurrent: boolean },
+  all: Array<{ ip: string; country: string; count: number }>
+): { riskLevel: "low" | "medium" | "high"; riskReasons: string[] } {
+  if (group.isCurrent) return { riskLevel: "low", riskReasons: [] };
+
+  const reasons: string[] = [];
+
+  const countryTotals: Record<string, number> = {};
+  const ipTotals: Record<string, number> = {};
+
+  for (const g of all) {
+    if (g.country) countryTotals[g.country] = (countryTotals[g.country] || 0) + g.count;
+    if (g.ip) ipTotals[g.ip] = (ipTotals[g.ip] || 0) + g.count;
+  }
+
+  const dominantCountry = Object.entries(countryTotals).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  const dominantIp = Object.entries(ipTotals).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+
+  const diffCountry = !!dominantCountry && !!group.country && group.country !== dominantCountry;
+  const diffIp = !!dominantIp && !!group.ip && group.ip !== dominantIp;
+
+  if (diffCountry) reasons.push("Nova localização detectada");
+  else if (diffIp) reasons.push("IP diferente do habitual");
+
+  if (diffCountry) return { riskLevel: "high", riskReasons: reasons };
+  if (diffIp) return { riskLevel: "medium", riskReasons: reasons };
+  return { riskLevel: "low", riskReasons: reasons };
+}
+
+export async function groupAndAnalyzeSessions(
+  userId: string | mongoose.Types.ObjectId,
+  currentSessionId?: string,
+  limit = 50
+): Promise<GroupedSessionsResult> {
+  const flat = await listUserSessions(userId, currentSessionId, limit);
+  const current = flat.find((s) => s.isCurrent) || null;
+
+  const groupMap = new Map<string, GroupedSession>();
+
+  for (const session of flat) {
+    const key = buildGroupKey(session);
+
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        groupKey: key,
+        deviceLabel: session.deviceLabel,
+        browser: session.browser,
+        os: session.os,
+        ip: session.ip,
+        locationLabel: session.locationLabel,
+        country: session.country,
+        countryCode: session.countryCode,
+        count: 0,
+        lastSeenAt: session.lastSeenAt,
+        createdAt: session.createdAt,
+        riskLevel: "low",
+        riskReasons: [],
+        sessions: [],
+        isCurrent: false,
+      });
+    }
+
+    const group = groupMap.get(key)!;
+    group.sessions.push(session);
+    group.count += 1;
+
+    if (session.isCurrent) group.isCurrent = true;
+    if (new Date(session.lastSeenAt) > new Date(group.lastSeenAt)) {
+      group.lastSeenAt = session.lastSeenAt;
+    }
+  }
+
+  const groups = Array.from(groupMap.values());
+
+  const riskInput = groups.map((g) => ({ ip: g.ip, country: g.country, count: g.count }));
+  for (const group of groups) {
+    const { riskLevel, riskReasons } = assessGroupRisk(group, riskInput);
+    group.riskLevel = riskLevel;
+    group.riskReasons = riskReasons;
+  }
+
+  groups.sort((a, b) => {
+    if (a.isCurrent) return -1;
+    if (b.isCurrent) return 1;
+    return new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime();
+  });
+
+  return { current, groups };
+}
+
+export async function revokeUserSession(
+  userId: string | mongoose.Types.ObjectId,
+  sessionId: string,
+  currentSessionId: string
+): Promise<boolean> {
+  if (String(sessionId) === String(currentSessionId)) {
+    throw new Error("Não é possível encerrar a sessão atual por esta rota.");
+  }
+
+  const session = await Session.findOne({ _id: sessionId, userId });
+  if (!session) return false;
+  if (session.status !== "active") return true;
+
+  session.status = "revoked";
+  session.revokedAt = new Date();
+  session.revokeReason = "logout";
+  await session.save();
+
+  return true;
+}
