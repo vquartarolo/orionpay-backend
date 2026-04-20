@@ -1,5 +1,10 @@
 import { sendVerificationEmail } from "../utils/email";
 import speakeasy from "speakeasy";
+import {
+  validateLoginInput,
+  recordLoginFailure,
+  clearLoginFailures,
+} from "../middleware/login-security.middleware";
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
@@ -11,9 +16,14 @@ import {
   create2FAToken,
   createAuthToken,
 } from "../config/auth";
-import { createSession } from "../services/session.service";
+import { createSession, getClientIp } from "../services/session.service";
 
 type PaymentMethod = "pix" | "creditCard" | "boleto" | "crypto";
+
+// Hash sentinela pré-gerado — usado para normalizar timing em usuário inexistente.
+// O valor não precisa corresponder a nenhuma senha real.
+const TIMING_HASH =
+  "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lh3i";
 
 function validateStrongPassword(password: string) {
   const value = String(password || "");
@@ -202,38 +212,45 @@ export const loginUser = async (
   req: Request,
   res: Response
 ): Promise<void> => {
-  try {
-    const { email, password } = req.body;
+  const ip      = getClientIp(req);
+  const risk    = (req as any).loginRisk ?? { captchaRequired: false };
+  const invalidMsg = "Email ou senha inválidos.";
 
-    if (!email || !password) {
-      res.status(400).json({
-        status: false,
-        msg: "Email e senha são obrigatórios.",
-      });
+  try {
+    // ── 1. Validação e sanitização de input ───────────────
+    const validation = validateLoginInput(req.body?.email, req.body?.password);
+
+    if (!validation.valid) {
+      console.warn(
+        `[LOGIN_INVALID_INPUT] ip=${ip} reason=${validation.reason} ua=${req.headers["user-agent"] ?? "-"}`
+      );
+      // Mantém timing similar via dummy compare
+      await bcrypt.compare("__dummy__", TIMING_HASH);
+      recordLoginFailure(ip, "");
+      res.status(401).json({ status: false, msg: invalidMsg, captchaRequired: risk.captchaRequired });
       return;
     }
 
-    const invalidMsg = "Email ou senha inválidos.";
+    const { email, password } = validation;
 
-    const user = await User.findOne({
-      email: String(email).toLowerCase().trim(),
-    });
+    // ── 2. Buscar usuário — query com string primitiva garantida ──
+    const user = await User.findOne({ email }).select("+password +twofaSecret");
 
     if (!user) {
-      res.status(401).json({
-        status: false,
-        msg: invalidMsg,
-      });
+      // Timing normalization: faz compare mesmo sem usuário
+      await bcrypt.compare(password, TIMING_HASH);
+      recordLoginFailure(ip, email);
+      console.warn(`[LOGIN_FAIL] ip=${ip} email=${email} reason=user_not_found`);
+      res.status(401).json({ status: false, msg: invalidMsg, captchaRequired: risk.captchaRequired });
       return;
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
-      res.status(401).json({
-        status: false,
-        msg: invalidMsg,
-      });
+      recordLoginFailure(ip, email);
+      console.warn(`[LOGIN_FAIL] ip=${ip} email=${email} reason=wrong_password`);
+      res.status(401).json({ status: false, msg: invalidMsg, captchaRequired: risk.captchaRequired });
       return;
     }
 
@@ -287,17 +304,15 @@ export const loginUser = async (
       return;
     }
 
-    // 🔐 Criar sessão real somente quando o login está completo
-    const session = await createSession({
-  userId: String(user._id),
-  req,
-});
+    // 🔐 Login bem-sucedido — zera contador de falhas
+    clearLoginFailures(ip, validation.email);
 
-const token = await createAuthToken({
-  id: user.id,
-  role: user.role,
-  sid: String(session._id),
-});
+    const session = await createSession({ userId: String(user._id), req });
+    const token   = await createAuthToken({
+      id:   user.id,
+      role: user.role,
+      sid:  String(session._id),
+    });
 
     res.status(200).json({
       status: true,
