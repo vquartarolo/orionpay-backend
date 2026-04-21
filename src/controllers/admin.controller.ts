@@ -4,6 +4,7 @@ import { User } from "../models/user.model";
 import { Wallet } from "../models/wallet.model";
 import { Transaction } from "../models/transaction.model";
 import { Kyc } from "../models/kyc.model";
+import { AdminConfig } from "../models/adminConfig.model";
 
 function sanitizeSearch(value: unknown) {
   return String(value || "").trim();
@@ -72,14 +73,20 @@ export async function listAdminAccounts(
 
     const userIds = users.map((u) => u._id);
 
-    const [wallets, transactions, kycs] = await Promise.all([
+    const [wallets, volumeAgg, kycs] = await Promise.all([
       Wallet.find({ userId: { $in: userIds } })
         .select("userId balance defaultAddress updatedAt")
         .lean(),
-      Transaction.find({ userId: { $in: userIds } })
-        .select("userId provider createdAt")
-        .sort({ createdAt: -1 })
-        .lean(),
+      Transaction.aggregate([
+        { $match: { userId: { $in: userIds }, status: "approved" } },
+        {
+          $group: {
+            _id: "$userId",
+            totalVolume: { $sum: "$amount" },
+            latestProvider: { $last: "$provider" },
+          },
+        },
+      ]),
       Kyc.find({ userId: { $in: userIds } })
         .select("userId status submittedAt updatedAt")
         .sort({ updatedAt: -1, submittedAt: -1, createdAt: -1 })
@@ -89,12 +96,12 @@ export async function listAdminAccounts(
     const walletMap = new Map<string, any>();
     wallets.forEach((wallet) => walletMap.set(String(wallet.userId), wallet));
 
-    const providerMap = new Map<string, string>();
-    transactions.forEach((tx) => {
-      const key = String(tx.userId);
-      if (!providerMap.has(key)) {
-        providerMap.set(key, String(tx.provider || ""));
-      }
+    const volumeMap = new Map<string, { totalVolume: number; latestProvider: string }>();
+    volumeAgg.forEach((row: any) => {
+      volumeMap.set(String(row._id), {
+        totalVolume: Number(row.totalVolume || 0),
+        latestProvider: String(row.latestProvider || ""),
+      });
     });
 
     const kycMap = new Map<string, any>();
@@ -108,6 +115,7 @@ export async function listAdminAccounts(
     const items = users.map((user) => {
       const wallet = walletMap.get(String(user._id));
       const kyc = kycMap.get(String(user._id));
+      const vol = volumeMap.get(String(user._id));
 
       return {
         id: String(user._id),
@@ -122,9 +130,12 @@ export async function listAdminAccounts(
         twofaEnabled: Boolean(user.twofaEnabled),
         pixKey: user.pixKey || "",
         balance: Number(wallet?.balance?.available || 0),
+        totalVolume: vol?.totalVolume ?? 0,
         defaultAddress: wallet?.defaultAddress || "",
         split: user.split || null,
-        latestProvider: providerMap.get(String(user._id)) || "",
+        routing: (user as any).routing || null,
+        retention: (user as any).retention || null,
+        latestProvider: vol?.latestProvider || "",
         kycStatus: kyc?.status || "",
         lastKycAt: kyc?.updatedAt || kyc?.submittedAt || null,
         onlineStatus: inferOnlineStatus(wallet?.updatedAt || user.updatedAt),
@@ -207,6 +218,8 @@ export async function getAdminAccountDetails(
         twofaEnabled: Boolean(user.twofaEnabled),
         pixKey: user.pixKey || "",
         split: user.split || null,
+        routing: (user as any).routing || null,
+        retention: (user as any).retention || null,
         token: user.token || null,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
@@ -352,5 +365,318 @@ export async function getAdminAccountKyc(
       status: false,
       msg: "Erro ao carregar o KYC da conta.",
     });
+  }
+}
+
+/* -------------------------------------------------------
+💸 GET /admin/accounts/:id/split
+-------------------------------------------------------- */
+export async function getAdminAccountSplit(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID de conta inválido." });
+      return;
+    }
+
+    const user = await User.findById(id)
+      .select("split routing retention")
+      .lean();
+
+    if (!user) {
+      res.status(404).json({ status: false, msg: "Conta não encontrada." });
+      return;
+    }
+
+    res.json({
+      status: true,
+      split: user.split || null,
+      routing: (user as any).routing || null,
+      retention: (user as any).retention || null,
+    });
+  } catch (error) {
+    console.error("Erro em getAdminAccountSplit:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar taxas da conta." });
+  }
+}
+
+/* -------------------------------------------------------
+💸 PATCH /admin/accounts/:id/split
+Body: {
+  cashIn: { pix, crypto } (optional),
+  cashOut: { pix, crypto } (optional),
+  retention: { days, percentage } (optional)
+}
+Cada campo é { fixed: number, percentage: number }.
+-------------------------------------------------------- */
+export async function updateAdminAccountSplit(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID de conta inválido." });
+      return;
+    }
+
+    const { cashIn, cashOut, retention } = req.body || {};
+
+    const $set: Record<string, any> = {};
+
+    const validMethod = (v: any) =>
+      v &&
+      typeof v.fixed === "number" &&
+      typeof v.percentage === "number" &&
+      v.fixed >= 0 &&
+      v.percentage >= 0 &&
+      v.percentage <= 100;
+
+    if (cashIn) {
+      if (cashIn.pix && validMethod(cashIn.pix)) {
+        $set["split.cashIn.pix.fixed"] = cashIn.pix.fixed;
+        $set["split.cashIn.pix.percentage"] = cashIn.pix.percentage;
+      }
+      if (cashIn.crypto && validMethod(cashIn.crypto)) {
+        $set["split.cashIn.crypto.fixed"] = cashIn.crypto.fixed;
+        $set["split.cashIn.crypto.percentage"] = cashIn.crypto.percentage;
+      }
+    }
+
+    if (cashOut) {
+      if (cashOut.pix && validMethod(cashOut.pix)) {
+        $set["split.cashOut.pix.fixed"] = cashOut.pix.fixed;
+        $set["split.cashOut.pix.percentage"] = cashOut.pix.percentage;
+      }
+      if (cashOut.crypto && validMethod(cashOut.crypto)) {
+        $set["split.cashOut.crypto.fixed"] = cashOut.crypto.fixed;
+        $set["split.cashOut.crypto.percentage"] = cashOut.crypto.percentage;
+      }
+    }
+
+    if (
+      retention &&
+      typeof retention.days === "number" &&
+      typeof retention.percentage === "number" &&
+      retention.days >= 0 &&
+      retention.percentage >= 0 &&
+      retention.percentage <= 100
+    ) {
+      $set["retention.days"] = retention.days;
+      $set["retention.percentage"] = retention.percentage;
+    }
+
+    if (Object.keys($set).length === 0) {
+      res.status(400).json({ status: false, msg: "Nenhum campo válido para atualizar." });
+      return;
+    }
+
+    const user = await User.findByIdAndUpdate(
+      id,
+      { $set },
+      { new: true }
+    ).select("split routing retention").lean();
+
+    if (!user) {
+      res.status(404).json({ status: false, msg: "Conta não encontrada." });
+      return;
+    }
+
+    res.json({
+      status: true,
+      msg: "Taxas atualizadas com sucesso.",
+      split: user.split || null,
+      retention: (user as any).retention || null,
+    });
+  } catch (error) {
+    console.error("Erro em updateAdminAccountSplit:", error);
+    res.status(500).json({ status: false, msg: "Erro ao atualizar taxas da conta." });
+  }
+}
+
+/* -------------------------------------------------------
+🏦 PATCH /admin/accounts/:id/routing
+Body: { chargeProvider: string, cashoutProvider: string }
+-------------------------------------------------------- */
+export async function updateAdminAccountRouting(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID de conta inválido." });
+      return;
+    }
+
+    const { chargeProvider, cashoutProvider } = req.body || {};
+
+    const $set: Record<string, any> = {};
+
+    if (typeof chargeProvider === "string") {
+      $set["routing.chargeProvider"] = chargeProvider.trim();
+    }
+    if (typeof cashoutProvider === "string") {
+      $set["routing.cashoutProvider"] = cashoutProvider.trim();
+    }
+
+    if (Object.keys($set).length === 0) {
+      res.status(400).json({ status: false, msg: "Nenhum campo válido para atualizar." });
+      return;
+    }
+
+    const user = await User.findByIdAndUpdate(
+      id,
+      { $set },
+      { new: true }
+    ).select("routing").lean();
+
+    if (!user) {
+      res.status(404).json({ status: false, msg: "Conta não encontrada." });
+      return;
+    }
+
+    res.json({
+      status: true,
+      msg: "Adquirentes atualizados com sucesso.",
+      routing: (user as any).routing || null,
+    });
+  } catch (error) {
+    console.error("Erro em updateAdminAccountRouting:", error);
+    res.status(500).json({ status: false, msg: "Erro ao atualizar adquirentes da conta." });
+  }
+}
+
+/* -------------------------------------------------------
+🏗 GET /admin/providers
+Retorna provedores disponíveis (adquirentes).
+-------------------------------------------------------- */
+export async function getAdminProviders(
+  _req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const providers = [
+      { value: "", label: "Padrão do sistema" },
+      { value: "zendry", label: "Zendry" },
+      { value: "cartwavehub", label: "CartWaveHub" },
+    ];
+
+    res.json({ status: true, items: providers });
+  } catch (error) {
+    console.error("Erro em getAdminProviders:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar provedores." });
+  }
+}
+
+/* -------------------------------------------------------
+⚙️ GET /admin/config
+Retorna a configuração padrão para novos sellers.
+Cria o documento se ainda não existir.
+-------------------------------------------------------- */
+export async function getAdminConfig(
+  _req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const existing = await AdminConfig.findOne().lean();
+
+    if (existing) {
+      res.json({ status: true, config: existing });
+      return;
+    }
+
+    await AdminConfig.create({});
+    const config = await AdminConfig.findOne().lean();
+    res.json({ status: true, config });
+  } catch (error) {
+    console.error("Erro em getAdminConfig:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar configuração padrão." });
+  }
+}
+
+/* -------------------------------------------------------
+⚙️ PATCH /admin/config
+Atualiza a configuração padrão para novos sellers.
+Mesma estrutura de campos que updateAdminAccountSplit.
+-------------------------------------------------------- */
+export async function updateAdminConfig(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const { cashIn, cashOut, retention, routing } = req.body || {};
+
+    const $set: Record<string, any> = {};
+
+    const validMethod = (v: any) =>
+      v &&
+      typeof v.fixed === "number" &&
+      typeof v.percentage === "number" &&
+      v.fixed >= 0 &&
+      v.percentage >= 0 &&
+      v.percentage <= 100;
+
+    if (cashIn?.pix && validMethod(cashIn.pix)) {
+      $set["split.cashIn.pix.fixed"] = cashIn.pix.fixed;
+      $set["split.cashIn.pix.percentage"] = cashIn.pix.percentage;
+    }
+    if (cashIn?.crypto && validMethod(cashIn.crypto)) {
+      $set["split.cashIn.crypto.fixed"] = cashIn.crypto.fixed;
+      $set["split.cashIn.crypto.percentage"] = cashIn.crypto.percentage;
+    }
+    if (cashOut?.pix && validMethod(cashOut.pix)) {
+      $set["split.cashOut.pix.fixed"] = cashOut.pix.fixed;
+      $set["split.cashOut.pix.percentage"] = cashOut.pix.percentage;
+    }
+    if (cashOut?.crypto && validMethod(cashOut.crypto)) {
+      $set["split.cashOut.crypto.fixed"] = cashOut.crypto.fixed;
+      $set["split.cashOut.crypto.percentage"] = cashOut.crypto.percentage;
+    }
+    if (
+      retention &&
+      typeof retention.days === "number" &&
+      typeof retention.percentage === "number" &&
+      retention.days >= 0 &&
+      retention.percentage >= 0 &&
+      retention.percentage <= 100
+    ) {
+      $set["retention.days"] = retention.days;
+      $set["retention.percentage"] = retention.percentage;
+    }
+    if (routing) {
+      if (typeof routing.chargeProvider === "string") {
+        $set["routing.chargeProvider"] = routing.chargeProvider.trim();
+      }
+      if (typeof routing.cashoutProvider === "string") {
+        $set["routing.cashoutProvider"] = routing.cashoutProvider.trim();
+      }
+    }
+
+    if (Object.keys($set).length === 0) {
+      res.status(400).json({ status: false, msg: "Nenhum campo válido para atualizar." });
+      return;
+    }
+
+    const config = await AdminConfig.findOneAndUpdate(
+      {},
+      { $set },
+      { new: true, upsert: true }
+    ).lean();
+
+    res.json({
+      status: true,
+      msg: "Configuração padrão atualizada com sucesso.",
+      config,
+    });
+  } catch (error) {
+    console.error("Erro em updateAdminConfig:", error);
+    res.status(500).json({ status: false, msg: "Erro ao atualizar configuração padrão." });
   }
 }

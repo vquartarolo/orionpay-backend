@@ -40,10 +40,27 @@ interface ISplitCashIn {
   pix: ISplitMethod;
   creditCard: ISplitMethod;
   boleto: ISplitMethod;
+  crypto: ISplitMethod;
+}
+
+interface ISplitCashOut {
+  pix: ISplitMethod;
+  crypto: ISplitMethod;
 }
 
 interface ISplit {
   cashIn: ISplitCashIn;
+  cashOut: ISplitCashOut;
+}
+
+interface IRouting {
+  chargeProvider: string;
+  cashoutProvider: string;
+}
+
+interface IRetention {
+  days: number;
+  percentage: number;
 }
 
 interface IUserTokenConfig {
@@ -90,6 +107,8 @@ export interface IUser extends Document {
 
   notifications: boolean;
   split: ISplit;
+  routing: IRouting;
+  retention: IRetention;
   token?: IUserTokenConfig;
 
   pixPayoutConfig?: IPixPayoutConfig;
@@ -281,39 +300,25 @@ const userSchema = new Schema<IUser>(
 
     split: {
       cashIn: {
-        pix: {
-          fixed: {
-            type: Number,
-            default: 0,
-          },
-          percentage: {
-            type: Number,
-            default: 0,
-          },
-        },
-
-        creditCard: {
-          fixed: {
-            type: Number,
-            default: 0,
-          },
-          percentage: {
-            type: Number,
-            default: 0,
-          },
-        },
-
-        boleto: {
-          fixed: {
-            type: Number,
-            default: 0,
-          },
-          percentage: {
-            type: Number,
-            default: 0,
-          },
-        },
+        pix:        { fixed: { type: Number, default: 0 }, percentage: { type: Number, default: 0 } },
+        creditCard: { fixed: { type: Number, default: 0 }, percentage: { type: Number, default: 0 } },
+        boleto:     { fixed: { type: Number, default: 0 }, percentage: { type: Number, default: 0 } },
+        crypto:     { fixed: { type: Number, default: 0 }, percentage: { type: Number, default: 0 } },
       },
+      cashOut: {
+        pix:    { fixed: { type: Number, default: 0 }, percentage: { type: Number, default: 0 } },
+        crypto: { fixed: { type: Number, default: 0 }, percentage: { type: Number, default: 0 } },
+      },
+    },
+
+    routing: {
+      chargeProvider:  { type: String, default: "" },
+      cashoutProvider: { type: String, default: "" },
+    },
+
+    retention: {
+      days:       { type: Number, default: 0 },
+      percentage: { type: Number, default: 0 },
     },
   },
   {

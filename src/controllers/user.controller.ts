@@ -152,9 +152,14 @@ export const registerUser = async (
 
       split: {
         cashIn: {
-          pix: { fixed: 0, percentage: 0 },
+          pix:        { fixed: 0, percentage: 0 },
           creditCard: { fixed: 0, percentage: 0 },
-          boleto: { fixed: 0, percentage: 0 },
+          boleto:     { fixed: 0, percentage: 0 },
+          crypto:     { fixed: 0, percentage: 0 },
+        },
+        cashOut: {
+          pix:    { fixed: 0, percentage: 0 },
+          crypto: { fixed: 0, percentage: 0 },
         },
       },
     });
@@ -942,9 +947,14 @@ export const createAdminUser = async (
 
       split: {
         cashIn: {
-          pix: { fixed: 0, percentage: 0 },
+          pix:        { fixed: 0, percentage: 0 },
           creditCard: { fixed: 0, percentage: 0 },
-          boleto: { fixed: 0, percentage: 0 },
+          boleto:     { fixed: 0, percentage: 0 },
+          crypto:     { fixed: 0, percentage: 0 },
+        },
+        cashOut: {
+          pix:    { fixed: 0, percentage: 0 },
+          crypto: { fixed: 0, percentage: 0 },
         },
       },
     });
@@ -1035,9 +1045,14 @@ export const updateSplitFees = async (
     if (!user.split?.cashIn) {
       user.split = {
         cashIn: {
-          pix: { fixed: 0, percentage: 0 },
+          pix:        { fixed: 0, percentage: 0 },
           creditCard: { fixed: 0, percentage: 0 },
-          boleto: { fixed: 0, percentage: 0 },
+          boleto:     { fixed: 0, percentage: 0 },
+          crypto:     { fixed: 0, percentage: 0 },
+        },
+        cashOut: {
+          pix:    { fixed: 0, percentage: 0 },
+          crypto: { fixed: 0, percentage: 0 },
         },
       };
     }

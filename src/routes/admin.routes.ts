@@ -6,6 +6,12 @@ import {
   updateAdminAccountStatus,
   getAdminAccountTransactions,
   getAdminAccountKyc,
+  getAdminAccountSplit,
+  updateAdminAccountSplit,
+  updateAdminAccountRouting,
+  getAdminProviders,
+  getAdminConfig,
+  updateAdminConfig,
 } from "../controllers/admin.controller";
 
 const router = Router();
@@ -23,10 +29,29 @@ router.get(
   }
 );
 
-router.get("/accounts", requireAuth, requireBackofficeAccess, listAdminAccounts);
+// Listagem e detalhes de contas
+router.get("/accounts",     requireAuth, requireBackofficeAccess, listAdminAccounts);
 router.get("/accounts/:id", requireAuth, requireBackofficeAccess, getAdminAccountDetails);
+
+// Status
 router.patch("/accounts/:id/status", requireAuth, requireRole(["admin", "master"]), updateAdminAccountStatus);
+
+// Split / taxas por seller
+router.get("/accounts/:id/split",   requireAuth, requireBackofficeAccess,            getAdminAccountSplit);
+router.patch("/accounts/:id/split", requireAuth, requireRole(["admin", "master"]),   updateAdminAccountSplit);
+
+// Roteamento de adquirente por seller
+router.patch("/accounts/:id/routing", requireAuth, requireRole(["admin", "master"]), updateAdminAccountRouting);
+
+// Transações e KYC por seller
 router.get("/accounts/:id/transactions", requireAuth, requireBackofficeAccess, getAdminAccountTransactions);
-router.get("/accounts/:id/kyc", requireAuth, requireBackofficeAccess, getAdminAccountKyc);
+router.get("/accounts/:id/kyc",          requireAuth, requireBackofficeAccess, getAdminAccountKyc);
+
+// Lista de adquirentes disponíveis
+router.get("/providers", requireAuth, requireBackofficeAccess, getAdminProviders);
+
+// Configuração padrão para novos sellers
+router.get("/config",   requireAuth, requireRole(["admin", "master"]), getAdminConfig);
+router.patch("/config", requireAuth, requireRole(["admin", "master"]), updateAdminConfig);
 
 export default router;
