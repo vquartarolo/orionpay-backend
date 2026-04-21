@@ -3,6 +3,7 @@ import {
   createCheckout,
   getCheckout,
   getCheckoutById,
+  getCheckoutByDomain,
   getPublicCheckout,
   updateCheckout,
   deleteCheckout,
@@ -10,6 +11,7 @@ import {
 } from "../controllers/checkout.controller";
 import { renderCheckoutPreview } from "../controllers/checkout.preview";
 import { payCheckout } from "../controllers/checkout.pay.controller";
+import { domainResolverMiddleware } from "../middlewares/domainResolver.middleware";
 
 const router = Router();
 
@@ -30,6 +32,11 @@ router.post("/", async (req: Request, res: Response) => {
 // POST /checkout/create (legado)
 router.post("/create", async (req: Request, res: Response) => {
   await createCheckout(req, res);
+});
+
+// GET /checkout/current — resolução por hostname (domínio customizado)
+router.get("/current", domainResolverMiddleware, async (req: Request, res: Response) => {
+  await getCheckoutByDomain(req, res);
 });
 
 // GET /checkout/public?id=...

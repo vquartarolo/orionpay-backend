@@ -6,6 +6,7 @@ import morgan from "morgan";
 import path from "path";
 
 import { connectDB } from "./config/database";
+import { Domain } from "./models/domain.model";
 import routes from "./routes";
 import testRoutes from "./routes/test.routes";
 import webhookRoutes from "./routes/witetec-webhook.routes";
@@ -44,15 +45,59 @@ function buildAllowedOrigins(): Set<string> {
 
 const allowedOrigins = buildAllowedOrigins();
 
+// Verifica se uma origem desconhecida corresponde a um domínio verificado no banco.
+// Só é chamada após o fast-path (allowedOrigins) falhar — evita hit de DB para origens conhecidas.
+async function isCustomDomainOriginAllowed(origin: string): Promise<boolean> {
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+
+  try {
+    const found = await Domain.findOne({
+      domain: hostname,
+      status: "verified",
+      txtVerified: true,
+      cnameVerified: true,
+    })
+      .select("_id")
+      .lean();
+    return !!found;
+  } catch {
+    // Falha de DB: bloqueia por segurança — nunca liberar em caso de erro
+    return false;
+  }
+}
+
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    // sem origin = requisição server-to-server (webhooks, health checks, Railway)
-    if (!origin || allowedOrigins.has(origin)) {
+    // Sem origin = server-to-server (webhooks, health checks, Railway)
+    if (!origin) {
       callback(null, true);
       return;
     }
-    console.warn(`[CORS] Origem bloqueada: ${origin}`);
-    callback(new Error("Origem não permitida pelo CORS"));
+
+    // Fast path: whitelist estática (localhost, vercel principal, env vars)
+    if (allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    // Slow path: domínio customizado verificado no banco
+    isCustomDomainOriginAllowed(origin)
+      .then((allowed) => {
+        if (allowed) {
+          callback(null, true);
+        } else {
+          console.warn(`[CORS] Origem bloqueada: ${origin}`);
+          callback(new Error("Origem não permitida pelo CORS"));
+        }
+      })
+      .catch(() => {
+        callback(new Error("Erro ao verificar origem."));
+      });
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],

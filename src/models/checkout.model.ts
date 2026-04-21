@@ -27,6 +27,7 @@ export interface ICheckout extends Document {
   userId: mongoose.Types.ObjectId;
   name: string;
   productId?: mongoose.Types.ObjectId | null;
+  customDomainId?: mongoose.Types.ObjectId | null;
   config?: ICheckoutBuilderConfig;
 
   // legado
@@ -97,6 +98,14 @@ const CheckoutSchema = new Schema<ICheckout>(
     productId: {
       type: Schema.Types.ObjectId,
       ref: "Product",
+      default: null,
+      index: true,
+    },
+
+    // Domínio personalizado verificado associado a este checkout (etapa 3)
+    customDomainId: {
+      type: Schema.Types.ObjectId,
+      ref: "Domain",
       default: null,
       index: true,
     },

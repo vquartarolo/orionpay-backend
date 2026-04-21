@@ -4,6 +4,7 @@ import { decodeToken } from "../config/auth";
 import { User } from "../models/user.model";
 import { Product } from "../models/product.model";
 import { Checkout } from "../models/checkout.model";
+import { Domain } from "../models/domain.model";
 
 const getUserFromToken = async (token?: string) => {
   if (!token) return null;
@@ -22,6 +23,8 @@ const normalizeCheckout = (checkout: any) => {
     id: String(plain._id),
     ...plain,
     _id: undefined,
+    // Garante que customDomainId saia sempre como string ou null
+    customDomainId: plain.customDomainId ? String(plain.customDomainId) : null,
   };
 };
 
@@ -257,7 +260,9 @@ export const updateCheckout = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const { name, config, status, ...legacyUpdates } = req.body;
+    // customDomainId extraído explicitamente para impedir que
+    // passe sem validação pelo Object.assign(legacyUpdates) abaixo.
+    const { name, config, status, customDomainId: rawCustomDomainId, ...legacyUpdates } = req.body;
 
     const updates: any = {};
 
@@ -289,6 +294,54 @@ export const updateCheckout = async (req: Request, res: Response): Promise<void>
         }
       } else {
         updates.productId = null;
+      }
+    }
+
+    // ── Domínio personalizado ──────────────────────────────────────
+    // Só processa se o campo veio no payload (undefined = não tocou).
+    if (rawCustomDomainId !== undefined) {
+      if (!rawCustomDomainId) {
+        // null / "" / false → remove associação
+        updates.customDomainId = null;
+      } else {
+        if (!mongoose.Types.ObjectId.isValid(rawCustomDomainId)) {
+          res.status(400).json({ status: false, msg: "ID de domínio inválido." });
+          return;
+        }
+
+        // Valida: existe, pertence ao usuário, está verificado com TXT e CNAME
+        const domain = await Domain.findOne({
+          _id: new mongoose.Types.ObjectId(rawCustomDomainId),
+          userId: user._id,
+          status: "verified",
+          txtVerified: true,
+          cnameVerified: true,
+        }).lean();
+
+        if (!domain) {
+          res.status(400).json({
+            status: false,
+            msg: "Domínio não encontrado, não pertence a você ou não está completamente verificado.",
+          });
+          return;
+        }
+
+        // Verifica se outro checkout do mesmo usuário já usa este domínio
+        const conflict = await Checkout.findOne({
+          customDomainId: domain._id,
+          userId: user._id,
+          _id: { $ne: new mongoose.Types.ObjectId(id) },
+        }).lean();
+
+        if (conflict) {
+          res.status(409).json({
+            status: false,
+            msg: "Este domínio já está associado a outro checkout.",
+          });
+          return;
+        }
+
+        updates.customDomainId = domain._id;
       }
     }
 
@@ -384,6 +437,26 @@ export const getPublicCheckout = async (req: Request, res: Response): Promise<vo
   } catch (error) {
     console.error("❌ Erro em getPublicCheckout:", error);
     res.status(500).json({ status: false, msg: "Erro interno ao consultar checkout." });
+  }
+};
+
+export const getCheckoutByDomain = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const checkout = req.resolvedCheckout;
+
+    if (!checkout) {
+      res.status(404).json({ status: false, msg: "Nenhum checkout associado a este domínio." });
+      return;
+    }
+
+    const product = checkout.productId
+      ? await Product.findById(checkout.productId).lean()
+      : null;
+
+    res.status(200).json({ status: true, checkout: normalizeCheckout(checkout), product });
+  } catch (error) {
+    console.error("❌ Erro em getCheckoutByDomain:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao consultar checkout por domínio." });
   }
 };
 

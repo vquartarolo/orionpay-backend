@@ -11,6 +11,7 @@ import sessionRoutes from "./session.routes";
 import adminRoutes from "./admin.routes";
 import productsRoutes from "./products.routes";
 import checkoutRoutes from "./checkout.routes";
+import domainRoutes from "./domain.routes";
 
 const router = Router();
 
@@ -25,6 +26,7 @@ router.use("/kyc", kycRoutes);
 router.use("/sessions", sessionRoutes);
 
 router.use("/products", productsRoutes);
+router.use("/domains", domainRoutes);
 
 // compatibilidade dupla
 router.use("/checkout", checkoutRoutes);
