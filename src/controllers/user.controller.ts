@@ -11,6 +11,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { User } from "../models/user.model";
 import { Wallet } from "../models/wallet.model";
+import { AdminConfig } from "../models/adminConfig.model";
 import {
   decodeToken,
   create2FAToken,
@@ -123,6 +124,9 @@ export const registerUser = async (
       Date.now() + 1000 * 60 * 60 * 24
     );
 
+    const adminConfig = await AdminConfig.findOne().lean();
+    const cfg = adminConfig;
+
     const user = await User.create({
       name: String(name).trim(),
       email: normalizedEmail,
@@ -152,15 +156,23 @@ export const registerUser = async (
 
       split: {
         cashIn: {
-          pix:        { fixed: 0, percentage: 0 },
+          pix:        { fixed: cfg?.split?.cashIn?.pix?.fixed ?? 0,    percentage: cfg?.split?.cashIn?.pix?.percentage ?? 0 },
           creditCard: { fixed: 0, percentage: 0 },
           boleto:     { fixed: 0, percentage: 0 },
-          crypto:     { fixed: 0, percentage: 0 },
+          crypto:     { fixed: cfg?.split?.cashIn?.crypto?.fixed ?? 0, percentage: cfg?.split?.cashIn?.crypto?.percentage ?? 0 },
         },
         cashOut: {
-          pix:    { fixed: 0, percentage: 0 },
-          crypto: { fixed: 0, percentage: 0 },
+          pix:    { fixed: cfg?.split?.cashOut?.pix?.fixed ?? 0,    percentage: cfg?.split?.cashOut?.pix?.percentage ?? 0 },
+          crypto: { fixed: cfg?.split?.cashOut?.crypto?.fixed ?? 0, percentage: cfg?.split?.cashOut?.crypto?.percentage ?? 0 },
         },
+      },
+      routing: {
+        chargeProvider:  cfg?.routing?.chargeProvider  ?? "",
+        cashoutProvider: cfg?.routing?.cashoutProvider ?? "",
+      },
+      retention: {
+        days:       cfg?.retention?.days       ?? 0,
+        percentage: cfg?.retention?.percentage ?? 0,
       },
     });
 
@@ -918,6 +930,9 @@ export const createAdminUser = async (
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    const adminConfig = await AdminConfig.findOne().lean();
+    const cfg = adminConfig;
+
     const admin = await User.create({
       name: String(name || "").trim(),
       email: String(email).toLowerCase().trim(),
@@ -947,15 +962,23 @@ export const createAdminUser = async (
 
       split: {
         cashIn: {
-          pix:        { fixed: 0, percentage: 0 },
+          pix:        { fixed: cfg?.split?.cashIn?.pix?.fixed ?? 0,    percentage: cfg?.split?.cashIn?.pix?.percentage ?? 0 },
           creditCard: { fixed: 0, percentage: 0 },
           boleto:     { fixed: 0, percentage: 0 },
-          crypto:     { fixed: 0, percentage: 0 },
+          crypto:     { fixed: cfg?.split?.cashIn?.crypto?.fixed ?? 0, percentage: cfg?.split?.cashIn?.crypto?.percentage ?? 0 },
         },
         cashOut: {
-          pix:    { fixed: 0, percentage: 0 },
-          crypto: { fixed: 0, percentage: 0 },
+          pix:    { fixed: cfg?.split?.cashOut?.pix?.fixed ?? 0,    percentage: cfg?.split?.cashOut?.pix?.percentage ?? 0 },
+          crypto: { fixed: cfg?.split?.cashOut?.crypto?.fixed ?? 0, percentage: cfg?.split?.cashOut?.crypto?.percentage ?? 0 },
         },
+      },
+      routing: {
+        chargeProvider:  cfg?.routing?.chargeProvider  ?? "",
+        cashoutProvider: cfg?.routing?.cashoutProvider ?? "",
+      },
+      retention: {
+        days:       cfg?.retention?.days       ?? 0,
+        percentage: cfg?.retention?.percentage ?? 0,
       },
     });
 

@@ -5,6 +5,8 @@ import { Wallet } from "../models/wallet.model";
 import { Transaction } from "../models/transaction.model";
 import { Kyc } from "../models/kyc.model";
 import { AdminConfig } from "../models/adminConfig.model";
+import { AuditLog } from "../models/auditLog.model";
+import { getClientIp } from "../services/session.service";
 
 function sanitizeSearch(value: unknown) {
   return String(value || "").trim();
@@ -257,6 +259,12 @@ export async function updateAdminAccountStatus(
       return;
     }
 
+    const beforeUser = await User.findById(id).select("status name email").lean();
+    if (!beforeUser) {
+      res.status(404).json({ status: false, msg: "Conta não encontrada." });
+      return;
+    }
+
     const user = await User.findByIdAndUpdate(
       id,
       { $set: { status: String(status) } },
@@ -266,6 +274,24 @@ export async function updateAdminAccountStatus(
     if (!user) {
       res.status(404).json({ status: false, msg: "Conta não encontrada." });
       return;
+    }
+
+    try {
+      await AuditLog.create({
+        actorUserId: req.authUser?.id ? new mongoose.Types.ObjectId(req.authUser.id) : null,
+        actorRole: req.authUser?.role || "admin",
+        action: "admin_status_update",
+        targetType: "user",
+        targetId: new mongoose.Types.ObjectId(id),
+        metadata: {
+          before: { status: beforeUser.status },
+          after:  { status: user.status },
+        },
+        ipAddress: getClientIp(req),
+        userAgent: String(req.headers["user-agent"] || ""),
+      });
+    } catch (auditErr) {
+      console.error("Erro ao registrar audit log (status):", auditErr);
     }
 
     res.json({
@@ -476,6 +502,12 @@ export async function updateAdminAccountSplit(
       return;
     }
 
+    const beforeUser = await User.findById(id).select("split retention").lean();
+    if (!beforeUser) {
+      res.status(404).json({ status: false, msg: "Conta não encontrada." });
+      return;
+    }
+
     const user = await User.findByIdAndUpdate(
       id,
       { $set },
@@ -485,6 +517,24 @@ export async function updateAdminAccountSplit(
     if (!user) {
       res.status(404).json({ status: false, msg: "Conta não encontrada." });
       return;
+    }
+
+    try {
+      await AuditLog.create({
+        actorUserId: req.authUser?.id ? new mongoose.Types.ObjectId(req.authUser.id) : null,
+        actorRole: req.authUser?.role || "admin",
+        action: "admin_split_update",
+        targetType: "user",
+        targetId: new mongoose.Types.ObjectId(id),
+        metadata: {
+          before: { split: (beforeUser as any).split, retention: (beforeUser as any).retention },
+          after:  { split: user.split, retention: (user as any).retention },
+        },
+        ipAddress: getClientIp(req),
+        userAgent: String(req.headers["user-agent"] || ""),
+      });
+    } catch (auditErr) {
+      console.error("Erro ao registrar audit log (split):", auditErr);
     }
 
     res.json({
@@ -531,6 +581,12 @@ export async function updateAdminAccountRouting(
       return;
     }
 
+    const beforeUser = await User.findById(id).select("routing").lean();
+    if (!beforeUser) {
+      res.status(404).json({ status: false, msg: "Conta não encontrada." });
+      return;
+    }
+
     const user = await User.findByIdAndUpdate(
       id,
       { $set },
@@ -540,6 +596,24 @@ export async function updateAdminAccountRouting(
     if (!user) {
       res.status(404).json({ status: false, msg: "Conta não encontrada." });
       return;
+    }
+
+    try {
+      await AuditLog.create({
+        actorUserId: req.authUser?.id ? new mongoose.Types.ObjectId(req.authUser.id) : null,
+        actorRole: req.authUser?.role || "admin",
+        action: "admin_routing_update",
+        targetType: "user",
+        targetId: new mongoose.Types.ObjectId(id),
+        metadata: {
+          before: { routing: (beforeUser as any).routing },
+          after:  { routing: (user as any).routing },
+        },
+        ipAddress: getClientIp(req),
+        userAgent: String(req.headers["user-agent"] || ""),
+      });
+    } catch (auditErr) {
+      console.error("Erro ao registrar audit log (routing):", auditErr);
     }
 
     res.json({
@@ -664,11 +738,31 @@ export async function updateAdminConfig(
       return;
     }
 
+    const beforeConfig = await AdminConfig.findOne().lean();
+
     const config = await AdminConfig.findOneAndUpdate(
       {},
       { $set },
       { new: true, upsert: true }
     ).lean();
+
+    try {
+      await AuditLog.create({
+        actorUserId: req.authUser?.id ? new mongoose.Types.ObjectId(req.authUser.id) : null,
+        actorRole: req.authUser?.role || "admin",
+        action: "admin_config_update",
+        targetType: "config",
+        targetId: null,
+        metadata: {
+          before: beforeConfig || {},
+          after:  config || {},
+        },
+        ipAddress: getClientIp(req),
+        userAgent: String(req.headers["user-agent"] || ""),
+      });
+    } catch (auditErr) {
+      console.error("Erro ao registrar audit log (config):", auditErr);
+    }
 
     res.json({
       status: true,
@@ -678,5 +772,250 @@ export async function updateAdminConfig(
   } catch (error) {
     console.error("Erro em updateAdminConfig:", error);
     res.status(500).json({ status: false, msg: "Erro ao atualizar configuração padrão." });
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DASHBOARD FINANCEIRO
+══════════════════════════════════════════════════════════════════════ */
+
+function parseDays(value: unknown, def = 30): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return def;
+  return Math.min(Math.floor(n), 365);
+}
+
+function pctDelta(curr: number, prev: number): number {
+  if (prev === 0) return curr > 0 ? 100 : 0;
+  return Math.round(((curr - prev) / prev) * 1000) / 10;
+}
+
+/* -------------------------------------------------------
+📊 GET /admin/dashboard/overview?days=30
+KPIs principais + comparação com período anterior.
+-------------------------------------------------------- */
+export async function getDashboardOverview(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const days  = parseDays(req.query.days, 30);
+    const now   = new Date();
+    const start = new Date(now.getTime() - days * 864e5);
+    const prev  = new Date(start.getTime() - days * 864e5);
+
+    const [currAgg, prevAgg, activeSellers, totalSellers] = await Promise.all([
+      Transaction.aggregate([
+        { $match: { status: "approved", createdAt: { $gte: start, $lte: now } } },
+        { $group: { _id: null, volume: { $sum: "$amount" }, revenue: { $sum: "$fee" }, count: { $sum: 1 } } },
+      ]),
+      Transaction.aggregate([
+        { $match: { status: "approved", createdAt: { $gte: prev, $lt: start } } },
+        { $group: { _id: null, volume: { $sum: "$amount" }, revenue: { $sum: "$fee" }, count: { $sum: 1 } } },
+      ]),
+      User.countDocuments({ status: "active", accountStatus: "seller_active" }),
+      User.countDocuments({ role: { $in: ["seller", "admin", "master"] } }),
+    ]);
+
+    const c = currAgg[0] || { volume: 0, revenue: 0, count: 0 };
+    const p = prevAgg[0] || { volume: 0, revenue: 0, count: 0 };
+
+    res.json({
+      status: true,
+      period: days,
+      volumeTotal:       c.volume,
+      revenueTotal:      c.revenue,
+      transactionsTotal: c.count,
+      activeSellers,
+      totalSellers,
+      ticketAverage: c.count > 0 ? c.volume / c.count : 0,
+      deltas: {
+        volume:       pctDelta(c.volume,   p.volume),
+        revenue:      pctDelta(c.revenue,  p.revenue),
+        transactions: pctDelta(c.count,    p.count),
+      },
+    });
+  } catch (error) {
+    console.error("Erro em getDashboardOverview:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar overview." });
+  }
+}
+
+/* -------------------------------------------------------
+📈 GET /admin/dashboard/volume?days=30
+Série temporal diária de volume (transações aprovadas).
+-------------------------------------------------------- */
+export async function getDashboardVolumeSeries(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const days  = parseDays(req.query.days, 30);
+    const start = new Date(Date.now() - days * 864e5);
+
+    const rows = await Transaction.aggregate([
+      { $match: { status: "approved", createdAt: { $gte: start } } },
+      {
+        $group: {
+          _id:    { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          volume: { $sum: "$amount" },
+          count:  { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { date: "$_id", volume: 1, count: 1, _id: 0 } },
+    ]);
+
+    const map = new Map(rows.map((r: any) => [r.date, r]));
+    const series: { date: string; volume: number; count: number }[] = [];
+    for (let i = 0; i < days; i++) {
+      const d   = new Date(start.getTime() + i * 864e5);
+      const key = d.toISOString().slice(0, 10);
+      series.push((map.get(key) as any) || { date: key, volume: 0, count: 0 });
+    }
+
+    res.json({ status: true, series });
+  } catch (error) {
+    console.error("Erro em getDashboardVolumeSeries:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar série de volume." });
+  }
+}
+
+/* -------------------------------------------------------
+💰 GET /admin/dashboard/revenue?days=30
+Série temporal diária de receita (taxas coletadas).
+-------------------------------------------------------- */
+export async function getDashboardRevenueSeries(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const days  = parseDays(req.query.days, 30);
+    const start = new Date(Date.now() - days * 864e5);
+
+    const rows = await Transaction.aggregate([
+      { $match: { status: "approved", createdAt: { $gte: start } } },
+      {
+        $group: {
+          _id:     { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          revenue: { $sum: "$fee" },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { date: "$_id", revenue: 1, _id: 0 } },
+    ]);
+
+    const map = new Map(rows.map((r: any) => [r.date, r]));
+    const series: { date: string; revenue: number }[] = [];
+    for (let i = 0; i < days; i++) {
+      const d   = new Date(start.getTime() + i * 864e5);
+      const key = d.toISOString().slice(0, 10);
+      series.push((map.get(key) as any) || { date: key, revenue: 0 });
+    }
+
+    res.json({ status: true, series });
+  } catch (error) {
+    console.error("Erro em getDashboardRevenueSeries:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar série de receita." });
+  }
+}
+
+/* -------------------------------------------------------
+🏆 GET /admin/dashboard/top-sellers?days=30&limit=8
+Ranking de sellers por volume no período.
+-------------------------------------------------------- */
+export async function getDashboardTopSellers(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const days  = parseDays(req.query.days, 30);
+    const limit = Math.min(Number(req.query.limit) || 8, 20);
+    const start = new Date(Date.now() - days * 864e5);
+
+    const items = await Transaction.aggregate([
+      { $match: { status: "approved", createdAt: { $gte: start } } },
+      {
+        $group: {
+          _id:          "$userId",
+          volume:       { $sum: "$amount" },
+          revenue:      { $sum: "$fee" },
+          transactions: { $sum: 1 },
+        },
+      },
+      { $sort: { volume: -1 } },
+      { $limit: limit },
+      {
+        $lookup: {
+          from:         "users",
+          localField:   "_id",
+          foreignField: "_id",
+          as:           "user",
+        },
+      },
+      { $unwind: { path: "$user", preserveNullAndEmptyArrays: false } },
+      {
+        $project: {
+          _id:          0,
+          userId:       "$_id",
+          name:         "$user.name",
+          email:        "$user.email",
+          role:         "$user.role",
+          status:       "$user.status",
+          accountStatus: "$user.accountStatus",
+          volume:       1,
+          revenue:      1,
+          transactions: 1,
+        },
+      },
+    ]);
+
+    res.json({ status: true, items });
+  } catch (error) {
+    console.error("Erro em getDashboardTopSellers:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar top sellers." });
+  }
+}
+
+/* -------------------------------------------------------
+⚠️ GET /admin/dashboard/attention
+Contas que exigem atenção operacional.
+-------------------------------------------------------- */
+export async function getDashboardAttention(
+  _req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const sel = "name email role status accountStatus createdAt updatedAt";
+
+    const [blocked, kycPending, noTwoFA] = await Promise.all([
+      User.find({ status: "blocked" })
+        .select(sel).sort({ updatedAt: -1 }).limit(8).lean(),
+      User.find({ accountStatus: { $in: ["kyc_pending", "kyc_under_review"] } })
+        .select(sel).sort({ createdAt: -1 }).limit(8).lean(),
+      User.find({ role: "seller", twofaEnabled: false, status: "active", emailVerified: true })
+        .select(sel).sort({ createdAt: -1 }).limit(8).lean(),
+    ]);
+
+    const fmt = (users: any[]) =>
+      users.map((u) => ({
+        id:            String(u._id),
+        name:          u.name || "",
+        email:         u.email || "",
+        role:          u.role || "user",
+        status:        u.status || "active",
+        accountStatus: u.accountStatus || "",
+        updatedAt:     u.updatedAt || u.createdAt,
+      }));
+
+    res.json({
+      status: true,
+      blocked:    fmt(blocked),
+      kycPending: fmt(kycPending),
+      noTwoFA:    fmt(noTwoFA),
+    });
+  } catch (error) {
+    console.error("Erro em getDashboardAttention:", error);
+    res.status(500).json({ status: false, msg: "Erro ao carregar atenção." });
   }
 }

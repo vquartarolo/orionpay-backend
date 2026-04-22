@@ -12,7 +12,7 @@
       "src"
     ],
     "ext": "ts",
-    "exec": "ts-node src/server.ts"
+    "exec": "ts-node --transpile-only src/server.ts"
   },
   "keywords": [],
   "author": "",

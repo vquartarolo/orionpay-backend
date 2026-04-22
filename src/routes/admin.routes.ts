@@ -12,6 +12,11 @@ import {
   getAdminProviders,
   getAdminConfig,
   updateAdminConfig,
+  getDashboardOverview,
+  getDashboardVolumeSeries,
+  getDashboardRevenueSeries,
+  getDashboardTopSellers,
+  getDashboardAttention,
 } from "../controllers/admin.controller";
 
 const router = Router();
@@ -53,5 +58,12 @@ router.get("/providers", requireAuth, requireBackofficeAccess, getAdminProviders
 // Configuração padrão para novos sellers
 router.get("/config",   requireAuth, requireRole(["admin", "master"]), getAdminConfig);
 router.patch("/config", requireAuth, requireRole(["admin", "master"]), updateAdminConfig);
+
+// Dashboard financeiro executivo
+router.get("/dashboard/overview",    requireAuth, requireBackofficeAccess, getDashboardOverview);
+router.get("/dashboard/volume",      requireAuth, requireBackofficeAccess, getDashboardVolumeSeries);
+router.get("/dashboard/revenue",     requireAuth, requireBackofficeAccess, getDashboardRevenueSeries);
+router.get("/dashboard/top-sellers", requireAuth, requireBackofficeAccess, getDashboardTopSellers);
+router.get("/dashboard/attention",   requireAuth, requireBackofficeAccess, getDashboardAttention);
 
 export default router;

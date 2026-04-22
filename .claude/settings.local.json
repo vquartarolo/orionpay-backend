@@ -19,7 +19,16 @@
       "Bash(cat src/services/api.js)",
       "Bash(cat src/services/api.ts)",
       "Bash(cat src/services/auth.service.js)",
-      "Bash(cat src/services/auth.service.ts)"
+      "Bash(cat src/services/auth.service.ts)",
+      "Bash(curl -s http://localhost:3000/health)",
+      "Bash(curl -s http://localhost:5000/health)",
+      "Bash(npm run *)",
+      "Bash(echo \"PID=$!\")",
+      "Bash(curl -s http://localhost:3000/api/admin/me)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/api/admin/me)",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"viniciusquartarolo10@gmail.com\",\"password\":\"Admin123!@#\"}')",
+      "Bash(node -e ' *)"
     ]
   }
 }

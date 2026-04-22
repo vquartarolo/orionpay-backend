@@ -1,10 +1,16 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 export const AUDIT_ACTIONS = [
+  // KYC
   "kyc_submitted",
   "kyc_under_review",
   "kyc_approved",
   "kyc_rejected",
+  // Admin — seller management
+  "admin_status_update",
+  "admin_split_update",
+  "admin_routing_update",
+  "admin_config_update",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -13,7 +19,8 @@ export interface IAuditLog extends Document {
   actorUserId: mongoose.Types.ObjectId | null;
   actorRole: string;
   action: AuditAction;
-  targetType: "kyc" | "user";
+  targetType: "kyc" | "user" | "config";
+
   targetId: mongoose.Types.ObjectId | null;
   metadata: Record<string, unknown>;
   ipAddress: string;
@@ -47,7 +54,7 @@ const auditLogSchema = new Schema<IAuditLog>(
 
     targetType: {
       type: String,
-      enum: ["kyc", "user"],
+      enum: ["kyc", "user", "config"],
       required: true,
       index: true,
     },
