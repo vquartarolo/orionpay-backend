@@ -18,6 +18,7 @@ import {
   createAuthToken,
 } from "../config/auth";
 import { createSession, getClientIp } from "../services/session.service";
+import { Account } from "../models/account.model";
 
 type PaymentMethod = "pix" | "creditCard" | "boleto" | "crypto";
 
@@ -185,6 +186,19 @@ export const registerUser = async (
       },
       log: [],
     });
+
+    await Account.findOneAndUpdate(
+      { type: "user_wallet", ownerId: user._id },
+      {
+        $setOnInsert: {
+          type: "user_wallet",
+          ownerId: user._id,
+          label: `Wallet ${user._id.toString()}`,
+          currency: "BRL",
+        },
+      },
+      { upsert: true, new: true }
+    );
 
     const emailResult = await sendVerificationEmail({
       to: user.email,
@@ -988,6 +1002,19 @@ export const createAdminUser = async (
       balance: { available: 0, unAvailable: [] },
       log: [],
     });
+
+    await Account.findOneAndUpdate(
+      { type: "user_wallet", ownerId: admin._id },
+      {
+        $setOnInsert: {
+          type: "user_wallet",
+          ownerId: admin._id,
+          label: `Wallet ${admin._id.toString()}`,
+          currency: "BRL",
+        },
+      },
+      { upsert: true, new: true }
+    );
 
     res.status(201).json({
       status: true,
