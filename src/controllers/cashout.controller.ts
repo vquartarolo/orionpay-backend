@@ -6,6 +6,11 @@ import { decodeToken } from "../config/auth";
 import { User } from "../models/user.model";
 import { Wallet } from "../models/wallet.model";
 import { CashoutRequest } from "../models/cashoutRequest.model";
+import {
+  recordCashoutFreeze,
+  recordCashoutComplete,
+  recordCashoutRefund,
+} from "../services/ledger.service";
 
 type ZendryAuthResponse = {
   access_token?: string;
@@ -629,6 +634,14 @@ export const createCashoutRequest = async (
 
       await wallet.save({ session });
 
+      // Registra congelamento no ledger double-entry
+      await recordCashoutFreeze({
+        userId: user._id as Types.ObjectId,
+        cashoutRequestId: cashoutId.toString(),
+        amount: rawAmount,
+        session,
+      });
+
       responsePayload = {
         status: true,
         msg: "Saque solicitado com sucesso. Aguardando autorização do administrador.",
@@ -1004,6 +1017,14 @@ export const updateCashoutStatus = async (
         await cashout.save({ session });
         await wallet.save({ session });
 
+        // Registra estorno no ledger
+        await recordCashoutRefund({
+          userId: cashout.userId as Types.ObjectId,
+          cashoutRequestId: cashoutId.toString(),
+          amount: frozenAmount,
+          session,
+        });
+
         responsePayload = {
           status: true,
           msg: "Solicitação rejeitada com sucesso.",
@@ -1105,6 +1126,13 @@ export const updateCashoutStatus = async (
                   approvedBy: currentCashout.approvedBy || new Types.ObjectId(payload.id),
                 },
               });
+
+              // Registra saída efetiva de dinheiro no ledger
+              await recordCashoutComplete({
+                cashoutRequestId: cashoutObjectId.toString(),
+                amount: Number(currentCashout.amount || 0),
+                session: finalizeSession,
+              });
             } else if (internalStatus === "processing") {
               currentCashout.status = "processing";
 
@@ -1146,6 +1174,14 @@ export const updateCashoutStatus = async (
                   userAgent: String(req.headers["user-agent"] || ""),
                   approvedBy: currentCashout.approvedBy || new Types.ObjectId(payload.id),
                 },
+              });
+
+              // Registra estorno no ledger (provider recusou o saque)
+              await recordCashoutRefund({
+                userId: currentCashout.userId as Types.ObjectId,
+                cashoutRequestId: cashoutObjectId.toString(),
+                amount: frozenAmount,
+                session: finalizeSession,
               });
             }
 
@@ -1217,6 +1253,14 @@ export const updateCashoutStatus = async (
                 ? providerError.message
                 : "Falha ao enviar saque ao provedor.";
             currentCashout.processedAt = new Date();
+
+            // Registra estorno no ledger (exceção no provider)
+            await recordCashoutRefund({
+              userId: currentCashout.userId as Types.ObjectId,
+              cashoutRequestId: cashoutObjectId.toString(),
+              amount: frozenAmount,
+              session: rollbackSession,
+            });
 
             wallet.log.push({
               transactionId: null,

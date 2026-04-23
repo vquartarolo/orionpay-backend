@@ -1,5 +1,6 @@
 import express, { Request, Response } from "express";
 import crypto from "crypto";
+import mongoose from "mongoose";
 import { getCryptoProvider, detectCryptoProviderFromWebhook } from "../providers/crypto/crypto.factory";
 import { getPixProvider, detectPixProviderFromWebhook } from "../providers/pix/pix.factory";
 import { decodeToken } from "../config/auth";
@@ -9,6 +10,7 @@ import { Transaction, TransactionStatus } from "../models/transaction.model";
 import { Product } from "../models/product.model";
 import { RetentionPolicy } from "../models/retentionPolicy.model";
 import { calculatePixTax, round } from "../utils/fees";
+import { recordPixDeposit, recordCryptoDeposit } from "../services/ledger.service";
 
 type WebhookRequest = Request & {
   rawBody?: string;
@@ -159,132 +161,171 @@ async function cancelExpiredPendingTransactions(userId?: string) {
   }
 }
 
-async function creditWalletAfterChargeApproval(transactionId: string, req: Request) {
-  const transaction = await Transaction.findById(transactionId);
+type ApprovalResult = {
+  ok: boolean;
+  code: number;
+  msg: string;
+  transaction?: InstanceType<typeof Transaction>;
+  wallet?: InstanceType<typeof Wallet>;
+};
 
-  if (!transaction) {
+async function creditWalletAfterChargeApproval(
+  transactionId: string,
+  req: Request
+): Promise<ApprovalResult> {
+  // Verificação rápida fora de session (idempotência de primeiro nível)
+  const txCheck = await Transaction.findById(transactionId);
+
+  if (!txCheck) {
     return { ok: false, code: 404, msg: "Transação não encontrada." };
   }
 
-  if (!["pix", "crypto"].includes(transaction.method)) {
+  if (!["pix", "crypto"].includes(txCheck.method)) {
     return { ok: false, code: 400, msg: "Método inválido." };
   }
 
-  // 🔐 BLOQUEIO FORTE — já aprovado = não processa de novo
-  if (transaction.status === "approved") {
+  if (txCheck.status === "approved") {
     return {
       ok: true,
       code: 200,
       msg: "Transação já estava aprovada (idempotência aplicada).",
-      transaction,
+      transaction: txCheck,
     };
   }
 
-  // ⛔ NÃO APROVA SE NÃO ESTIVER PENDENTE
-  if (transaction.status !== "pending") {
+  if (txCheck.status !== "pending") {
     return {
       ok: false,
       code: 400,
-      msg: `Transação não pode ser aprovada (status: ${transaction.status})`,
+      msg: `Transação não pode ser aprovada (status: ${txCheck.status})`,
     };
   }
 
-  // ⏱ EXPIRAÇÃO
-  if (
-    transaction.expiresAt &&
-    new Date(transaction.expiresAt) <= new Date()
-  ) {
-    transaction.status = transaction.method === "crypto" ? "expired" : "cancelled";
-    await transaction.save();
-
-    return {
-      ok: false,
-      code: 400,
-      msg: "Transação expirada.",
-    };
+  if (txCheck.expiresAt && new Date(txCheck.expiresAt) <= new Date()) {
+    txCheck.status = txCheck.method === "crypto" ? "expired" : "cancelled";
+    await txCheck.save();
+    return { ok: false, code: 400, msg: "Transação expirada." };
   }
 
-  const wallet = await Wallet.findOne({ userId: transaction.userId });
+  // Operação principal com session — wallet update e ledger são atômicos
+  const session = await mongoose.startSession();
 
-  if (!wallet) {
-    return { ok: false, code: 404, msg: "Carteira não encontrada." };
+  let result: ApprovalResult | null = null;
+
+  try {
+    await session.withTransaction(async () => {
+      const transaction = await Transaction.findById(transactionId).session(session);
+
+      if (!transaction) throw new Error("TX_NOT_FOUND");
+
+      // Idempotência de segundo nível (dentro da session)
+      if (transaction.status === "approved") {
+        result = {
+          ok: true,
+          code: 200,
+          msg: "Transação já estava aprovada (idempotência aplicada).",
+          transaction,
+        };
+        return;
+      }
+
+      const wallet = await Wallet.findOne({ userId: transaction.userId }).session(session);
+
+      if (!wallet) throw new Error("WALLET_NOT_FOUND");
+
+      // Idempotência de terceiro nível: wallet.log já contém esta transação
+      const alreadyLogged = wallet.log.some(
+        (log: any) => log.transactionId?.toString() === transaction._id.toString()
+      );
+
+      if (alreadyLogged) {
+        transaction.status = "approved";
+        await transaction.save({ session });
+        result = {
+          ok: true,
+          code: 200,
+          msg: "Transação já processada anteriormente.",
+          transaction,
+        };
+        return;
+      }
+
+      // Atualiza transação
+      transaction.status = "approved";
+      transaction.approvedAt = new Date();
+
+      if (transaction.method === "pix") {
+        transaction.pix = {
+          ...(transaction.pix || {}),
+          paidAt: new Date(),
+          endToEndId: transaction.pix?.endToEndId || `E2E${Date.now()}`,
+        };
+      }
+
+      if (transaction.method === "crypto") {
+        transaction.crypto = {
+          ...(transaction.crypto || {}),
+          paymentStatus: "finished",
+          paidAt: new Date(),
+        };
+      }
+
+      await transaction.save({ session });
+
+      // Credita wallet (mantém compatibilidade com sistema atual)
+      wallet.balance.available += transaction.netAmount;
+
+      wallet.log.push({
+        transactionId: transaction._id,
+        type: "topup",
+        method: transaction.method,
+        amount: transaction.netAmount,
+        status: "approved",
+        description:
+          transaction.description ||
+          (transaction.method === "pix" ? "PIX aprovado" : "Cripto aprovado"),
+        createdAt: new Date(),
+        security: {
+          createdAt: new Date(),
+          ipAddress: req.ip || "unknown",
+          userAgent: String(req.headers["user-agent"] || "unknown"),
+        },
+      });
+
+      await wallet.save({ session });
+
+      // Registra no ledger double-entry (atômico com wallet update acima)
+      if (transaction.method === "pix") {
+        await recordPixDeposit({
+          userId: transaction.userId,
+          transactionId: transaction._id.toString(),
+          netAmount: transaction.netAmount,
+          fee: transaction.fee,
+          session,
+        });
+      } else if (transaction.method === "crypto") {
+        await recordCryptoDeposit({
+          userId: transaction.userId,
+          transactionId: transaction._id.toString(),
+          netAmount: transaction.netAmount,
+          fee: transaction.fee,
+          session,
+        });
+      }
+
+      result = {
+        ok: true,
+        code: 200,
+        msg: "Saldo creditado com sucesso.",
+        transaction,
+        wallet,
+      };
+    });
+  } finally {
+    await session.endSession();
   }
 
-  // 🔍 VERIFICA SE JÁ EXISTE LOG (SEGUNDA CAMADA DE PROTEÇÃO)
-  const alreadyLogged = wallet.log.some(
-    (log: any) =>
-      log.transactionId?.toString() === transaction._id.toString()
-  );
-
-  if (alreadyLogged) {
-    transaction.status = "approved";
-    await transaction.save();
-
-    return {
-      ok: true,
-      code: 200,
-      msg: "Transação já processada anteriormente.",
-      transaction,
-    };
-  }
-
-  // ✅ APROVAÇÃO REAL
-  transaction.status = "approved";
-
-  // 🕒 AUDITORIA
-  transaction.approvedAt = new Date();
-
-  if (transaction.method === "pix") {
-    transaction.pix = {
-      ...(transaction.pix || {}),
-      paidAt: new Date(),
-      endToEndId:
-        transaction.pix?.endToEndId || `E2E${Date.now()}`,
-    };
-  }
-
-  if (transaction.method === "crypto") {
-    transaction.crypto = {
-      ...(transaction.crypto || {}),
-      paymentStatus: "finished",
-      paidAt: new Date(),
-    };
-  }
-
-  await transaction.save();
-
-  // 💰 CREDITA SALDO
-  wallet.balance.available += transaction.netAmount;
-
-  // 🧾 LOG
-  wallet.log.push({
-    transactionId: transaction._id,
-    type: "topup",
-    method: transaction.method,
-    amount: transaction.netAmount,
-    status: "approved",
-    description:
-      transaction.description ||
-      (transaction.method === "pix"
-        ? "PIX aprovado"
-        : "Cripto aprovado"),
-    createdAt: new Date(),
-    security: {
-      createdAt: new Date(),
-      ipAddress: req.ip || "unknown",
-      userAgent: String(req.headers["user-agent"] || "unknown"),
-    },
-  });
-
-  await wallet.save();
-
-  return {
-    ok: true,
-    code: 200,
-    msg: "Saldo creditado com sucesso.",
-    transaction,
-    wallet,
-  };
+  return result ?? { ok: false, code: 500, msg: "Erro interno ao processar aprovação." };
 }
 
 async function creditWalletAfterPixApproval(transactionId: string, req: Request) {

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { bootstrapLedger } from "../services/ledger.service";
 
 // NÃO precisa de dotenv no Railway (ele já usa process.env automático)
 
@@ -16,6 +17,9 @@ export const connectDB = async (): Promise<void> => {
     await mongoose.connect(MONGO_URI);
 
     console.log("🔥 MongoDB conectado com sucesso!");
+
+    await bootstrapLedger();
+    console.log("📒 Ledger: contas de plataforma verificadas.");
   } catch (error) {
     console.error("🚨 Erro ao conectar ao MongoDB:", error);
     process.exit(1);
