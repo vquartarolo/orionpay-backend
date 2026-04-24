@@ -11,6 +11,10 @@ import {
   recordCashoutComplete,
   recordCashoutRefund,
 } from "../services/ledger.service";
+import {
+  syncWithdrawalFromWitetec,
+  pollPendingWitetecWithdrawals,
+} from "../services/witetec-withdrawal.service";
 
 type ZendryAuthResponse = {
   access_token?: string;
@@ -1442,5 +1446,92 @@ export const updateCashoutStatus = async (
     res.status(500).json({ status: false, msg: "Erro ao atualizar status." });
   } finally {
     await session.endSession();
+  }
+};
+
+/* -------------------------------------------------------
+🔄 5. Sincronizar status de um saque com o provider (admin)
+   POST /api/cashout/admin/:id/sync-provider
+-------------------------------------------------------- */
+export const syncCashoutProvider = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const payload = await getAuthPayload(req);
+    if (!payload || !isAdminRole(payload.role)) {
+      res.status(403).json({ status: false, msg: "Acesso negado." });
+      return;
+    }
+
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID de solicitação inválido." });
+      return;
+    }
+
+    const { providerStatus, internalStatus, result } =
+      await syncWithdrawalFromWitetec(id);
+
+    res.status(200).json({
+      status: true,
+      cashoutId: id,
+      providerStatus,
+      internalStatus,
+      action: result.action,
+      reason: result.reason,
+    });
+  } catch (err: any) {
+    if (err.message === "CASHOUT_NOT_FOUND") {
+      res.status(404).json({ status: false, msg: "Solicitação não encontrada." });
+      return;
+    }
+    if (err.message === "NOT_WITETEC_PROVIDER") {
+      res.status(400).json({ status: false, msg: "Saque não é do provider Witetec." });
+      return;
+    }
+    if (err.message === "PROVIDER_ID_EMPTY") {
+      res.status(400).json({
+        status: false,
+        msg: "providerId do saque está vazio. Use /api/webhooks/admin/sync-withdrawal com witetecWithdrawalId.",
+      });
+      return;
+    }
+    if (err.message === "WITETEC_API_KEY_NOT_CONFIGURED") {
+      res.status(500).json({ status: false, msg: "WITETEC_API_KEY não configurada." });
+      return;
+    }
+    console.error("❌ Erro em syncCashoutProvider:", err);
+    res.status(500).json({ status: false, msg: "Erro ao sincronizar saque com o provider." });
+  }
+};
+
+/* -------------------------------------------------------
+🔄 6. Polling em lote de saques pendentes (admin)
+   POST /api/cashout/admin/poll-provider
+-------------------------------------------------------- */
+export const pollPendingCashouts = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const payload = await getAuthPayload(req);
+    if (!payload || !isAdminRole(payload.role)) {
+      res.status(403).json({ status: false, msg: "Acesso negado." });
+      return;
+    }
+
+    const olderThanMinutes = Number(req.body?.olderThanMinutes ?? 5);
+    if (!Number.isFinite(olderThanMinutes) || olderThanMinutes < 1) {
+      res.status(400).json({ status: false, msg: "olderThanMinutes deve ser >= 1." });
+      return;
+    }
+
+    const stats = await pollPendingWitetecWithdrawals(olderThanMinutes);
+
+    res.status(200).json({ status: true, stats });
+  } catch (err: any) {
+    console.error("❌ Erro em pollPendingCashouts:", err);
+    res.status(500).json({ status: false, msg: "Erro ao fazer poll de saques pendentes." });
   }
 };

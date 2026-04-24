@@ -6,12 +6,13 @@ import {
   adminSyncWitetecWithdrawal,
 } from "../controllers/witetec-webhook.controller";
 import { requireAuth, requireRole } from "../middleware/auth.middleware";
+import { verifyWitetecWebhook } from "../middleware/witetec-webhook-auth.middleware";
 
 const router = Router();
 
 // POST /api/webhooks/witetec
-// Sem autenticação — Witetec chama diretamente (depósito + saque)
-router.post("/witetec", handleWitetecWebhook as RequestHandler);
+// Sem autenticação de usuário — verificação por HMAC/secret do provider
+router.post("/witetec", verifyWitetecWebhook as RequestHandler, handleWitetecWebhook as RequestHandler);
 
 // POST /api/webhooks/admin/sync-transaction
 // Sincronização manual de um depósito específico

@@ -126,6 +126,15 @@ app.use(
   })
 );
 
+app.use(
+  "/api/webhooks/witetec",
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
+
 /* -------------------------------------------------------
 📦 JSON padrão (resto da API)
 Limite 10mb para suportar imagens base64 no payload

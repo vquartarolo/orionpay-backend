@@ -18,6 +18,7 @@ import {
   getDashboardTopSellers,
   getDashboardAttention,
 } from "../controllers/admin.controller";
+import { runReconciliation } from "../controllers/reconciliation.controller";
 
 const router = Router();
 
@@ -65,5 +66,8 @@ router.get("/dashboard/volume",      requireAuth, requireBackofficeAccess, getDa
 router.get("/dashboard/revenue",     requireAuth, requireBackofficeAccess, getDashboardRevenueSeries);
 router.get("/dashboard/top-sellers", requireAuth, requireBackofficeAccess, getDashboardTopSellers);
 router.get("/dashboard/attention",   requireAuth, requireBackofficeAccess, getDashboardAttention);
+
+// Reconciliação financeira (somente leitura)
+router.post("/reconcile", requireAuth, requireRole(["admin", "master"]), runReconciliation);
 
 export default router;

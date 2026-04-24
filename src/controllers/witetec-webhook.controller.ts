@@ -6,6 +6,11 @@ import { Wallet } from "../models/wallet.model";
 import { CashoutRequest } from "../models/cashoutRequest.model";
 import { User } from "../models/user.model";
 import { recordPixDeposit } from "../services/ledger.service";
+import {
+  normalizeWitetecWithdrawalStatus,
+  finalizeCashoutWithdrawal,
+  syncWithdrawalFromWitetec,
+} from "../services/witetec-withdrawal.service";
 
 const BASE_URL = process.env.WITETEC_BASE_URL ?? "https://api.witetec.net";
 
@@ -31,25 +36,6 @@ function resolveDepositStatus(
   return "pending";
 }
 
-// ── Normaliza status de saque (withdrawal) ────────────────────────────────────
-function resolveWithdrawalStatus(
-  eventType: string
-): "completed" | "processing" | "failed" {
-  const s = eventType.toUpperCase();
-
-  if (["WITHDRAWAL_PAID", "PAID", "COMPLETED"].includes(s))
-    return "completed";
-
-  if ([
-    "WITHDRAWAL_FAILED", "WITHDRAWAL_CANCELED", "WITHDRAWAL_CANCELLED",
-    "WITHDRAWAL_BLOCKED", "WITHDRAWAL_REFUNDED", "FAILED", "CANCELED", "REFUNDED",
-  ].includes(s))
-    return "failed";
-
-  // Estados intermediários: WITHDRAWAL_PENDING, WITHDRAWAL_APPROVED,
-  // WITHDRAWAL_PROCESSING, WITHDRAWAL_IN_PROGRESS — todos sem estorno
-  return "processing";
-}
 
 // ── Crédito de wallet com idempotência completa (depósito) ────────────────────
 async function creditWallet(
@@ -255,20 +241,24 @@ async function handleWithdrawalWebhook(
   );
 
   if (!witetecId) {
-    console.error("[WITETEC WITHDRAW WEBHOOK] ERROR — body.id ausente. Payload ignorado.");
+    console.error(
+      "[WITETEC WITHDRAW WEBHOOK] ERROR — body.id ausente. Payload ignorado."
+    );
     return;
   }
 
-  const internalStatus = resolveWithdrawalStatus(eventType);
+  // O eventType é mais específico que status (ex: WITHDRAWAL_PAID vs PAID)
+  const effectiveStatus = eventType || rawStatus;
+  const internalStatus = normalizeWitetecWithdrawalStatus(effectiveStatus);
 
   console.log(
-    `[WITETEC WITHDRAW WEBHOOK] eventType=${eventType} id=${witetecId} → ${internalStatus}`
+    `[WITETEC WITHDRAW WEBHOOK] eventType=${eventType} id=${witetecId} → internalStatus=${internalStatus}`
   );
   console.log(
-    `[WITETEC WITHDRAW WEBHOOK] MATCH STRATEGY — providerId=${witetecId} | sellerExternalRef=${sellerExternalRef || "(vazio)"}`
+    `[WITETEC WITHDRAW WEBHOOK] MATCH — providerId=${witetecId} | sellerExternalRef=${sellerExternalRef || "(vazio)"}`
   );
 
-  const cashout: any = await CashoutRequest.findOne({
+  const cashout = await CashoutRequest.findOne({
     $or: [
       { providerId: witetecId },
       ...(sellerExternalRef ? [{ providerReference: sellerExternalRef }] : []),
@@ -283,111 +273,17 @@ async function handleWithdrawalWebhook(
   }
 
   console.log(
-    `[WITETEC WITHDRAW WEBHOOK] CASHOUT FOUND — _id=${cashout._id} status=${cashout.status} provider=${cashout.provider}`
+    `[WITETEC WITHDRAW WEBHOOK] CASHOUT FOUND — _id=${cashout._id} status=${cashout.status}`
   );
 
-  if (cashout.status === "completed" || cashout.status === "failed") {
-    console.log(
-      `[WITETEC WITHDRAW WEBHOOK] Idempotência — saque ${cashout._id} já finalizado com status=${cashout.status}`
-    );
-    return;
-  }
+  const { action, reason } = await finalizeCashoutWithdrawal(
+    cashout._id.toString(),
+    effectiveStatus,
+    witetecId
+  );
 
-  cashout.providerStatus = rawStatus;
-
-  if (internalStatus === "completed") {
-    if (cashout.status !== "processing" && cashout.status !== "approved_admin") {
-      console.log(
-        `[WITETEC WITHDRAW WEBHOOK] Status incoerente para finalizar — atual=${cashout.status}`
-      );
-      await cashout.save();
-      return;
-    }
-
-    cashout.status = "completed";
-    cashout.processedAt = new Date();
-    await cashout.save();
-
-    const wallet = await Wallet.findOne({ userId: cashout.userId });
-    if (wallet) {
-      const frozenIndex = wallet.balance.unAvailable.findIndex(
-        (item: any) => item.cashoutRequestId?.toString() === cashout._id.toString()
-      );
-
-      if (frozenIndex !== -1) {
-        wallet.balance.unAvailable.splice(frozenIndex, 1);
-      }
-
-      wallet.log.push({
-        transactionId: null,
-        type: "withdraw",
-        method: "pix",
-        amount: Number(cashout.amount || 0),
-        status: "approved",
-        description: `Saque PIX confirmado pela Witetec (${cashout._id.toString()})`,
-        createdAt: new Date(),
-        security: {
-          createdAt: new Date(),
-          ipAddress: "webhook",
-          userAgent: "witetec-withdrawal-webhook",
-        },
-      });
-
-      await wallet.save();
-      console.log(
-        `[WITETEC WITHDRAW WEBHOOK] STATUS UPDATED — cashout=${cashout._id} → completed. Saldo congelado removido.`
-      );
-    }
-    return;
-  }
-
-  if (internalStatus === "failed") {
-    if (cashout.status === "processing" || cashout.status === "approved_admin") {
-      cashout.status = "failed";
-      cashout.processedAt = new Date();
-      cashout.failureReason = `Witetec: ${eventType}`;
-      await cashout.save();
-
-      const wallet = await Wallet.findOne({ userId: cashout.userId });
-      if (wallet) {
-        const frozenIndex = wallet.balance.unAvailable.findIndex(
-          (item: any) => item.cashoutRequestId?.toString() === cashout._id.toString()
-        );
-
-        if (frozenIndex !== -1) {
-          const frozenAmount = Number(wallet.balance.unAvailable[frozenIndex].amount || 0);
-          wallet.balance.available += frozenAmount;
-          wallet.balance.unAvailable.splice(frozenIndex, 1);
-
-          wallet.log.push({
-            transactionId: null,
-            type: "topup",
-            method: "pix",
-            amount: frozenAmount,
-            status: "approved",
-            description: `Estorno automático — saque PIX falhou na Witetec (${cashout._id.toString()})`,
-            createdAt: new Date(),
-            security: {
-              createdAt: new Date(),
-              ipAddress: "webhook",
-              userAgent: "witetec-withdrawal-webhook",
-            },
-          });
-
-          await wallet.save();
-          console.log(
-            `[WITETEC WITHDRAW WEBHOOK] STATUS UPDATED — cashout=${cashout._id} → failed. Saldo estornado: ${frozenAmount}`
-          );
-        }
-      }
-    }
-    return;
-  }
-
-  // processing / pending / approved — apenas atualiza providerStatus
-  await cashout.save();
   console.log(
-    `[WITETEC WITHDRAW WEBHOOK] STATUS UPDATED — cashout=${cashout._id} providerStatus=${cashout.providerStatus} (sem mudança de status interno)`
+    `[WITETEC WITHDRAW WEBHOOK] result — cashout=${cashout._id} action=${action}${reason ? ` reason=${reason}` : ""}`
   );
 }
 
@@ -522,7 +418,7 @@ export const adminSyncWitetecWithdrawal = async (
   try {
     const { cashoutId, witetecWithdrawalId } = req.body as {
       cashoutId?: string;
-      witetecWithdrawalId?: string; // override manual quando providerId está vazio
+      witetecWithdrawalId?: string;
     };
 
     if (!cashoutId) {
@@ -530,143 +426,43 @@ export const adminSyncWitetecWithdrawal = async (
       return;
     }
 
-    const cashout: any = await CashoutRequest.findById(cashoutId);
-    if (!cashout) {
+    const { providerStatus, internalStatus, result } =
+      await syncWithdrawalFromWitetec(cashoutId, witetecWithdrawalId);
+
+    res.status(200).json({
+      status: true,
+      cashoutId,
+      providerStatus,
+      internalStatus,
+      action: result.action,
+      reason: result.reason,
+    });
+  } catch (err: any) {
+    if (err.message === "CASHOUT_NOT_FOUND") {
       res.status(404).json({ status: false, msg: "Saque não encontrado." });
       return;
     }
-
-    if (cashout.provider !== "witetec") {
+    if (err.message === "NOT_WITETEC_PROVIDER") {
       res.status(400).json({ status: false, msg: "Saque não é do provider Witetec." });
       return;
     }
-
-    const apiKey = process.env.WITETEC_API_KEY ?? "";
-    if (!apiKey) {
+    if (err.message === "PROVIDER_ID_EMPTY") {
+      res.status(400).json({
+        status: false,
+        msg: "providerId do saque está vazio. Localize o ID no painel da Witetec e envie witetecWithdrawalId no body.",
+      });
+      return;
+    }
+    if (err.message === "WITETEC_API_KEY_NOT_CONFIGURED") {
       res.status(500).json({ status: false, msg: "WITETEC_API_KEY não configurada." });
       return;
     }
-
-    // Usa o ID salvo no banco; se estiver vazio (WITHDRAWAL_IN_PROGRESS sem ID),
-    // aceita override manual do admin via witetecWithdrawalId no body.
-    const witetecId = String(cashout.providerId || witetecWithdrawalId || "").trim();
-
-    if (!witetecId) {
-      res.status(400).json({
-        status: false,
-        msg: "providerId do saque está vazio. Localize o ID do saque no painel da Witetec e envie o campo witetecWithdrawalId no body.",
-      });
-      return;
-    }
-
-    // Se admin forneceu ID manual, salva no cashout para uso futuro
-    if (!cashout.providerId && witetecWithdrawalId) {
-      cashout.providerId = witetecWithdrawalId;
-      console.log(`[WITETEC WITHDRAWAL SYNC] providerId atualizado manualmente para ${witetecWithdrawalId}`);
-    }
-
-    console.log(`[WITETEC WITHDRAWAL SYNC] Consultando Witetec para withdrawal=${witetecId}`);
-
-    const { data: envelope } = await axios.get<Record<string, unknown>>(
-      `${BASE_URL}/withdrawals/${witetecId}`,
-      { headers: { "x-api-key": apiKey } }
-    );
-
-    console.log("[WITETEC WITHDRAWAL SYNC] Resposta:", JSON.stringify(envelope, null, 2));
-
-    const data = ((envelope?.data as Record<string, unknown>) ?? envelope) as Record<string, unknown>;
-    const rawStatus = String(data?.status ?? "").toUpperCase();
-    const internalStatus = resolveWithdrawalStatus(rawStatus);
-
-    cashout.providerStatus = rawStatus;
-
-    if (internalStatus === "completed" && cashout.status !== "completed") {
-      cashout.status = "completed";
-      cashout.processedAt = new Date();
-      await cashout.save();
-
-      const wallet = await Wallet.findOne({ userId: cashout.userId });
-      if (wallet) {
-        const frozenIndex = wallet.balance.unAvailable.findIndex(
-          (item: any) => item.cashoutRequestId?.toString() === cashout._id.toString()
-        );
-        if (frozenIndex !== -1) {
-          wallet.balance.unAvailable.splice(frozenIndex, 1);
-          wallet.log.push({
-            transactionId: null,
-            type: "withdraw",
-            method: "pix",
-            amount: Number(cashout.amount || 0),
-            status: "approved",
-            description: `Saque PIX confirmado via sync manual (${cashout._id.toString()})`,
-            createdAt: new Date(),
-            security: { createdAt: new Date(), ipAddress: req.ip || "", userAgent: "admin-sync" },
-          });
-          await wallet.save();
-        }
-      }
-
-      res.status(200).json({
-        status: true,
-        msg: "Saque marcado como concluído.",
-        witetecStatus: rawStatus,
-        cashoutStatus: "completed",
-      });
-      return;
-    }
-
-    if (internalStatus === "failed" && cashout.status === "processing") {
-      cashout.status = "failed";
-      cashout.processedAt = new Date();
-      cashout.failureReason = `Witetec: ${rawStatus}`;
-      await cashout.save();
-
-      const wallet = await Wallet.findOne({ userId: cashout.userId });
-      if (wallet) {
-        const frozenIndex = wallet.balance.unAvailable.findIndex(
-          (item: any) => item.cashoutRequestId?.toString() === cashout._id.toString()
-        );
-        if (frozenIndex !== -1) {
-          const frozenAmount = Number(wallet.balance.unAvailable[frozenIndex].amount || 0);
-          wallet.balance.available += frozenAmount;
-          wallet.balance.unAvailable.splice(frozenIndex, 1);
-          wallet.log.push({
-            transactionId: null,
-            type: "topup",
-            method: "pix",
-            amount: frozenAmount,
-            status: "approved",
-            description: `Estorno via sync manual — saque falhou (${cashout._id.toString()})`,
-            createdAt: new Date(),
-            security: { createdAt: new Date(), ipAddress: req.ip || "", userAgent: "admin-sync" },
-          });
-          await wallet.save();
-        }
-      }
-
-      res.status(200).json({
-        status: true,
-        msg: "Saque marcado como falho e saldo estornado.",
-        witetecStatus: rawStatus,
-        cashoutStatus: "failed",
-      });
-      return;
-    }
-
-    await cashout.save();
-    res.status(200).json({
-      status: true,
-      msg: "Sincronizado. Nenhuma mudança de status aplicada.",
-      witetecStatus: rawStatus,
-      cashoutStatus: cashout.status,
-    });
-  } catch (err: any) {
-    const res_data = err?.response?.data;
-    console.error("[WITETEC WITHDRAWAL SYNC] ERROR:", res_data ?? err?.message);
+    const detail = err?.response?.data ?? err?.message;
+    console.error("[WITETEC WITHDRAWAL SYNC] ERROR:", detail);
     res.status(500).json({
       status: false,
       msg: "Erro ao sincronizar saque com a Witetec.",
-      detail: res_data ?? err?.message,
+      detail,
     });
   }
 };

@@ -4,6 +4,8 @@ import {
   listCashoutRequests,
   releaseBalanceManually,
   updateCashoutStatus,
+  syncCashoutProvider,
+  pollPendingCashouts,
 } from "../controllers/cashout.controller";
 
 import {
@@ -55,6 +57,31 @@ router.patch(
   requireAuth,
   requireRole(["admin", "master"]),
   updateCashoutStatus
+);
+
+/* -------------------------------------------------------
+🔄 SINCRONIZAR SAQUE COM PROVIDER (ADMIN)
+   Consulta status atual na Witetec e finaliza se necessário.
+   Requer providerId preenchido no cashout.
+-------------------------------------------------------- */
+router.post(
+  "/admin/:id/sync-provider",
+  requireAuth,
+  requireRole(["admin", "master"]),
+  syncCashoutProvider
+);
+
+/* -------------------------------------------------------
+🔄 POLL EM LOTE — SAQUES PENDENTES (ADMIN)
+   Varre todos os cashouts processing/approved_admin com
+   providerId e atualiza cada um.
+   Body: { olderThanMinutes?: number } (default 5)
+-------------------------------------------------------- */
+router.post(
+  "/admin/poll-provider",
+  requireAuth,
+  requireRole(["admin", "master"]),
+  pollPendingCashouts
 );
 
 export default router;
