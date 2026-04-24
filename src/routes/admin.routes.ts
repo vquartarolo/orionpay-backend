@@ -19,6 +19,7 @@ import {
   getDashboardAttention,
 } from "../controllers/admin.controller";
 import { runReconciliation } from "../controllers/reconciliation.controller";
+import approvalRoutes from "./approval.routes";
 
 const router = Router();
 
@@ -69,5 +70,8 @@ router.get("/dashboard/attention",   requireAuth, requireBackofficeAccess, getDa
 
 // Reconciliação financeira (somente leitura)
 router.post("/reconcile", requireAuth, requireRole(["admin", "master"]), runReconciliation);
+
+// Maker-checker — governança de aprovações
+router.use("/approvals", approvalRoutes);
 
 export default router;

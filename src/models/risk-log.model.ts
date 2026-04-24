@@ -19,6 +19,8 @@ export interface IRiskLog extends Document {
   ipAddress?: string;
   userAgent?: string;
   metadata?: Record<string, unknown>;
+  kycSnapshot?: Record<string, unknown> | null;
+  ruleSource?: "kyc" | "transaction" | "behavior" | "mixed";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -67,6 +69,15 @@ const riskLogSchema = new Schema<IRiskLog>(
     metadata: {
       type: Schema.Types.Mixed,
       default: {},
+    },
+    kycSnapshot: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    ruleSource: {
+      type: String,
+      enum: ["kyc", "transaction", "behavior", "mixed"],
+      default: "transaction",
     },
   },
   { timestamps: true }

@@ -5,6 +5,7 @@ import fs from "fs";
 import mongoose from "mongoose";
 import { Kyc, KycStatus } from "../models/kyc.model";
 import { User } from "../models/user.model";
+import { AuditLog } from "../models/auditLog.model";
 
 const KYC_UPLOADS_FOLDER = path.join(process.cwd(), "uploads", "kyc");
 
@@ -396,10 +397,10 @@ export const reviewKyc = async (req: Request, res: Response): Promise<void> => {
     const decision = String(req.body?.decision || "").trim().toLowerCase();
     const reason = String(req.body?.reason || "").trim();
 
-    if (!["under_review", "approved", "rejected"].includes(decision)) {
+    if (!["under_review", "approved", "rejected", "manual_review"].includes(decision)) {
       res.status(400).json({
         status: false,
-        msg: "Decisão inválida. Use under_review, approved ou rejected.",
+        msg: "Decisão inválida. Use under_review, approved, rejected ou manual_review.",
       });
       return;
     }
@@ -432,12 +433,13 @@ export const reviewKyc = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    kyc.status = decision as KycStatus;
+    // manual_review mapeia para status "under_review" no modelo
+    kyc.status = (decision === "manual_review" ? "under_review" : decision) as KycStatus;
     kyc.reviewedAt = new Date();
     kyc.reviewedBy = new mongoose.Types.ObjectId(authUser.id);
     kyc.rejectionReason = decision === "rejected" ? reason : "";
 
-    if (decision === "under_review") {
+    if (decision === "under_review" || decision === "manual_review") {
       user.accountStatus = "kyc_under_review";
     }
 
@@ -455,6 +457,28 @@ export const reviewKyc = async (req: Request, res: Response): Promise<void> => {
     await kyc.save();
     await user.save();
 
+    // Audit log — fire and forget
+    const auditAction =
+      decision === "approved"      ? "kyc_approved"      :
+      decision === "rejected"      ? "kyc_rejected"      :
+      decision === "manual_review" ? "kyc_manual_review" :
+                                     "kyc_under_review";
+
+    AuditLog.create({
+      actorUserId: new mongoose.Types.ObjectId(authUser.id),
+      actorRole:   String((authUser as any)?.role || "admin"),
+      action:      auditAction,
+      targetType:  "kyc",
+      targetId:    kyc._id,
+      metadata: {
+        kycUserId: String(kyc.userId),
+        decision,
+        reason: decision === "rejected" ? reason : "",
+      },
+      ipAddress: req.ip || "",
+      userAgent: String(req.headers["user-agent"] || ""),
+    }).catch((err) => console.error("[AUDIT LOG] reviewKyc:", err));
+
     res.status(200).json({
       status: true,
       msg:
@@ -462,7 +486,9 @@ export const reviewKyc = async (req: Request, res: Response): Promise<void> => {
           ? "KYC aprovado com sucesso."
           : decision === "rejected"
             ? "KYC rejeitado com sucesso."
-            : "KYC movido para análise manual.",
+            : decision === "manual_review"
+              ? "KYC marcado para revisão manual."
+              : "KYC movido para análise manual.",
       kyc: {
         id: kyc.id,
         status: kyc.status,
@@ -527,5 +553,106 @@ export const getKycById = async (req: Request, res: Response): Promise<void> => 
       status: false,
       msg: "Erro interno ao buscar KYC.",
     });
+  }
+};
+
+/**
+ * PATCH /api/kyc/admin/:id/compliance
+ * Atualiza campos de compliance sem alterar o status do KYC.
+ * body: { pepStatus?, sanctionsStatus?, amlRiskLevel?, complianceNotes? }
+ */
+export const updateKycCompliance = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authUser = req.authUser;
+
+    if (!authUser?.id) {
+      res.status(401).json({ status: false, msg: "Usuário não autenticado." });
+      return;
+    }
+
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ status: false, msg: "ID de KYC inválido." });
+      return;
+    }
+
+    const kyc = await Kyc.findById(id);
+
+    if (!kyc) {
+      res.status(404).json({ status: false, msg: "KYC não encontrado." });
+      return;
+    }
+
+    const COMPLIANCE_STATUSES = ["unknown", "clear", "possible_match", "confirmed"];
+    const AML_LEVELS = ["low", "medium", "high"];
+
+    const { pepStatus, sanctionsStatus, amlRiskLevel, complianceNotes } = req.body ?? {};
+
+    if (pepStatus !== undefined) {
+      if (!COMPLIANCE_STATUSES.includes(String(pepStatus))) {
+        res.status(400).json({ status: false, msg: "pepStatus inválido." });
+        return;
+      }
+      (kyc as any).pepStatus = pepStatus;
+    }
+
+    if (sanctionsStatus !== undefined) {
+      if (!COMPLIANCE_STATUSES.includes(String(sanctionsStatus))) {
+        res.status(400).json({ status: false, msg: "sanctionsStatus inválido." });
+        return;
+      }
+      (kyc as any).sanctionsStatus = sanctionsStatus;
+    }
+
+    if (amlRiskLevel !== undefined) {
+      if (!AML_LEVELS.includes(String(amlRiskLevel))) {
+        res.status(400).json({ status: false, msg: "amlRiskLevel inválido." });
+        return;
+      }
+      (kyc as any).amlRiskLevel = amlRiskLevel;
+    }
+
+    if (complianceNotes !== undefined) {
+      (kyc as any).complianceNotes = String(complianceNotes || "").trim();
+    }
+
+    (kyc as any).complianceReviewedBy = new mongoose.Types.ObjectId(authUser.id);
+    (kyc as any).complianceReviewedAt = new Date();
+
+    await kyc.save();
+
+    AuditLog.create({
+      actorUserId: new mongoose.Types.ObjectId(authUser.id),
+      actorRole:   String((authUser as any)?.role || "admin"),
+      action:      "kyc_compliance_updated",
+      targetType:  "kyc",
+      targetId:    kyc._id,
+      metadata: {
+        kycUserId:       String(kyc.userId),
+        pepStatus:       (kyc as any).pepStatus,
+        sanctionsStatus: (kyc as any).sanctionsStatus,
+        amlRiskLevel:    (kyc as any).amlRiskLevel,
+      },
+      ipAddress: req.ip || "",
+      userAgent: String(req.headers["user-agent"] || ""),
+    }).catch((err) => console.error("[AUDIT LOG] updateKycCompliance:", err));
+
+    res.status(200).json({
+      status: true,
+      msg: "Campos de compliance atualizados com sucesso.",
+      kyc: {
+        id:                  kyc.id,
+        pepStatus:           (kyc as any).pepStatus,
+        sanctionsStatus:     (kyc as any).sanctionsStatus,
+        amlRiskLevel:        (kyc as any).amlRiskLevel,
+        complianceNotes:     (kyc as any).complianceNotes,
+        complianceReviewedBy: (kyc as any).complianceReviewedBy,
+        complianceReviewedAt: (kyc as any).complianceReviewedAt,
+      },
+    });
+  } catch (error) {
+    console.error("Erro em updateKycCompliance:", error);
+    res.status(500).json({ status: false, msg: "Erro interno ao atualizar compliance." });
   }
 };

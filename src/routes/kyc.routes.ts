@@ -6,6 +6,7 @@ import {
   reviewKyc,
   submitKyc,
   uploadKycFiles,
+  updateKycCompliance,
 } from "../controllers/kyc.controller";
 import {
   requireAuth,
@@ -51,6 +52,13 @@ router.patch(
   requireAuth,
   requireRole(["admin", "super_moderator", "master"]),
   reviewKyc
+);
+
+router.patch(
+  "/admin/:id/compliance",
+  requireAuth,
+  requireRole(["admin", "super_moderator", "master"]),
+  updateKycCompliance
 );
 
 export default router;

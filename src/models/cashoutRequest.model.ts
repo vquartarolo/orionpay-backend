@@ -35,6 +35,10 @@ export interface ICashoutRequest extends Document {
   riskReviewedBy?: Types.ObjectId | null;
   riskReviewedAt?: Date | null;
 
+  kycRiskLevel?: string | null;
+  kycPepStatus?: string | null;
+  kycSanctionsStatus?: string | null;
+
   provider: CashoutProvider;
   providerReference: string;
   providerIdempotencyKey: string;
@@ -242,6 +246,10 @@ const cashoutRequestSchema = new Schema<ICashoutRequest>(
       type: Date,
       default: null,
     },
+
+    kycRiskLevel:      { type: String, default: null },
+    kycPepStatus:      { type: String, default: null },
+    kycSanctionsStatus:{ type: String, default: null },
 
     webhook: {
       lastSignature: {

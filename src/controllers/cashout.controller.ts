@@ -19,6 +19,8 @@ import {
   checkCashoutRisk,
   logRiskDecision,
 } from "../services/risk.service";
+import { AuditLog } from "../models/auditLog.model";
+import { Kyc } from "../models/kyc.model";
 
 type ZendryAuthResponse = {
   access_token?: string;
@@ -557,6 +559,81 @@ export const createCashoutRequest = async (
       return;
     }
 
+    // ── Hard block: KYC obrigatório para saques ───────────────────────────
+    // Leitura fora da transaction para falha rápida antes de qualquer operação.
+    const kycCheckUser = await User.findById(payload.id).lean();
+
+    if (!kycCheckUser) {
+      cashoutError(res, 404, "USER_NOT_FOUND", "Usuário não encontrado.");
+      return;
+    }
+
+    const kycApproved =
+      kycCheckUser.accountStatus === "kyc_approved" ||
+      kycCheckUser.accountStatus === "seller_active";
+
+    if (!kycApproved) {
+      AuditLog.create({
+        actorUserId: kycCheckUser._id,
+        actorRole: String(kycCheckUser.role || "user"),
+        action: "kyc_required_cashout_blocked",
+        targetType: "user",
+        targetId: kycCheckUser._id,
+        metadata: {
+          amount: rawAmount,
+          pixKey: cleanPixKey,
+          pixKeyType,
+          accountStatus: kycCheckUser.accountStatus,
+        },
+        ipAddress: req.ip || "",
+        userAgent: String(req.headers["user-agent"] || ""),
+      }).catch((err) =>
+        console.error("[AUDIT LOG] kyc_required_cashout_blocked:", err)
+      );
+
+      cashoutError(
+        res,
+        403,
+        "KYC_REQUIRED",
+        "Para solicitar saques, conclua a verificação de identidade."
+      );
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Sanctions hard block (compliance — antes do motor de risco) ───────
+    const kycDocForSanctions = await Kyc.findOne({ userId: kycCheckUser._id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if ((kycDocForSanctions as any)?.sanctionsStatus === "confirmed") {
+      AuditLog.create({
+        actorUserId: kycCheckUser._id,
+        actorRole:   String(kycCheckUser.role || "user"),
+        action:      "risk_sanctions_block",
+        targetType:  "user",
+        targetId:    kycCheckUser._id,
+        metadata: {
+          amount:           rawAmount,
+          pixKey:           cleanPixKey,
+          pixKeyType,
+          kycId:            String((kycDocForSanctions as any)?._id ?? ""),
+          sanctionsStatus:  "confirmed",
+        },
+        ipAddress: req.ip || "",
+        userAgent: String(req.headers["user-agent"] || ""),
+      }).catch((err) => console.error("[AUDIT LOG] risk_sanctions_block:", err));
+
+      cashoutError(
+        res,
+        403,
+        "SANCTIONS_BLOCK",
+        "Conta bloqueada por política de compliance."
+      );
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     // ── Motor de risco (read-only, fora da transaction) ───────────────────
     const riskResult = await checkCashoutRisk({
       userId: payload.id,
@@ -574,16 +651,40 @@ export const createCashoutRequest = async (
 
     if (riskResult.decision === "block") {
       await logRiskDecision({
-        userId: payload.id,
-        action: "cashout_request",
-        amount: rawAmount,
-        riskScore: riskResult.score,
-        decision: "block",
-        reasons: riskResult.reasons,
-        ipAddress: req.ip || "",
-        userAgent: String(req.headers["user-agent"] || ""),
-        metadata: { pixKey: cleanPixKey, pixKeyType },
+        userId:     payload.id,
+        action:     "cashout_request",
+        amount:     rawAmount,
+        riskScore:  riskResult.score,
+        decision:   "block",
+        reasons:    riskResult.reasons,
+        ipAddress:  req.ip || "",
+        userAgent:  String(req.headers["user-agent"] || ""),
+        metadata:   { pixKey: cleanPixKey, pixKeyType },
+        kycSnapshot: riskResult.kycSnapshot,
       });
+
+      // Audit log específico se o bloqueio foi por razões KYC/compliance
+      const isKycBlock = riskResult.reasons.some((r) =>
+        /aml|pep|politicam|ubo|sanç|kyc irregular|nenhum documento kyc/i.test(r)
+      );
+      if (isKycBlock) {
+        AuditLog.create({
+          actorUserId: new Types.ObjectId(payload.id),
+          actorRole:   String((payload as any)?.role || "user"),
+          action:      "risk_kyc_block",
+          targetType:  "user",
+          targetId:    new Types.ObjectId(payload.id),
+          metadata: {
+            amount:     rawAmount,
+            pixKey:     cleanPixKey,
+            riskScore:  riskResult.score,
+            reasons:    riskResult.reasons,
+            kycSnapshot: riskResult.kycSnapshot,
+          },
+          ipAddress: req.ip || "",
+          userAgent: String(req.headers["user-agent"] || ""),
+        }).catch((err) => console.error("[AUDIT LOG] risk_kyc_block:", err));
+      }
 
       cashoutError(
         res,
@@ -592,6 +693,28 @@ export const createCashoutRequest = async (
         "Solicitação bloqueada por política de segurança. Entre em contato com o suporte."
       );
       return;
+    }
+
+    // Audit log para PEP em revisão
+    if (
+      riskResult.decision === "review" &&
+      riskResult.kycSnapshot?.pepStatus === "confirmed"
+    ) {
+      AuditLog.create({
+        actorUserId: new Types.ObjectId(payload.id),
+        actorRole:   String((payload as any)?.role || "user"),
+        action:      "risk_pep_review",
+        targetType:  "user",
+        targetId:    new Types.ObjectId(payload.id),
+        metadata: {
+          amount:    rawAmount,
+          pixKey:    cleanPixKey,
+          riskScore: riskResult.score,
+          kycSnapshot: riskResult.kycSnapshot,
+        },
+        ipAddress: req.ip || "",
+        userAgent: String(req.headers["user-agent"] || ""),
+      }).catch((err) => console.error("[AUDIT LOG] risk_pep_review:", err));
     }
     // ─────────────────────────────────────────────────────────────────────
 
@@ -635,9 +758,12 @@ export const createCashoutRequest = async (
             receiverDocument,
             status: "pending_admin",
             failureReason: "",
-            riskScore: riskResult.score,
-            riskDecision: riskResult.decision,
-            riskReasons: riskResult.reasons,
+            riskScore:           riskResult.score,
+            riskDecision:        riskResult.decision,
+            riskReasons:         riskResult.reasons,
+            kycRiskLevel:        riskResult.kycSnapshot?.amlRiskLevel    ?? null,
+            kycPepStatus:        riskResult.kycSnapshot?.pepStatus        ?? null,
+            kycSanctionsStatus:  riskResult.kycSnapshot?.sanctionsStatus  ?? null,
             requestMeta: {
               ipAddress: req.ip || "",
               userAgent: String(req.headers["user-agent"] || ""),
@@ -724,16 +850,17 @@ export const createCashoutRequest = async (
 
     // Log de risco fora da transaction (não bloqueia rollback em caso de falha)
     await logRiskDecision({
-      userId: payload.id,
-      action: "cashout_request",
-      amount: rawAmount,
-      riskScore: riskResult.score,
-      decision: riskResult.decision,
-      reasons: riskResult.reasons,
-      ipAddress: req.ip || "",
-      userAgent: String(req.headers["user-agent"] || ""),
+      userId:     payload.id,
+      action:     "cashout_request",
+      amount:     rawAmount,
+      riskScore:  riskResult.score,
+      decision:   riskResult.decision,
+      reasons:    riskResult.reasons,
+      ipAddress:  req.ip || "",
+      userAgent:  String(req.headers["user-agent"] || ""),
+      kycSnapshot: riskResult.kycSnapshot,
       metadata: {
-        pixKey: cleanPixKey,
+        pixKey:    cleanPixKey,
         pixKeyType,
         cashoutId: (responsePayload as any)?.cashoutId,
       },
@@ -831,9 +958,12 @@ export const listCashoutRequests = async (
           createdAt: cashout.createdAt,
           walletFrozenAmount: walletEntry?.amount ?? Number(cashout.amount || 0),
           description: walletEntry?.description || "",
-          riskScore: cashout.riskScore ?? null,
-          riskDecision: cashout.riskDecision ?? null,
-          riskReasons: cashout.riskReasons ?? [],
+          riskScore:          cashout.riskScore          ?? null,
+          riskDecision:       cashout.riskDecision       ?? null,
+          riskReasons:        cashout.riskReasons        ?? [],
+          kycRiskLevel:       cashout.kycRiskLevel       ?? null,
+          kycPepStatus:       cashout.kycPepStatus       ?? null,
+          kycSanctionsStatus: cashout.kycSanctionsStatus ?? null,
         };
       }),
     });
