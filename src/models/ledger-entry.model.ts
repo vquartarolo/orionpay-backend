@@ -17,6 +17,25 @@ export type LedgerEntryType = typeof LEDGER_ENTRY_TYPES[keyof typeof LEDGER_ENTR
 
 const ENTRY_TYPE_VALUES = Object.values(LEDGER_ENTRY_TYPES);
 
+// ── Metadata ─────────────────────────────────────────────────────────────────
+
+export interface ILedgerMetadata {
+  userId?: Types.ObjectId;
+  userEmail?: string;
+  userName?: string;
+  method?: string;
+  provider?: string;
+  providerId?: string;
+  pixKey?: string;
+  pixKeyType?: string;
+  operationCreatedAt?: Date;
+  approvedAt?: Date;
+  rejectedAt?: Date;
+  adminId?: Types.ObjectId;
+  adminEmail?: string;
+  reason?: string;
+}
+
 // ── Interface ─────────────────────────────────────────────────────────────────
 
 export interface ILedgerEntry extends Document {
@@ -33,8 +52,6 @@ export interface ILedgerEntry extends Document {
   /**
    * Chave de idempotência explícita e única.
    * Formato padrão: "<referenceId>::<entryType>[::<sufixo>]"
-   * O sufixo permite múltiplas entradas do mesmo tipo para o mesmo referenceId
-   * (ex: taxa de plataforma vs taxa regulatória, ou lançamentos parciais no futuro).
    */
   idempotencyKey: string;
   /**
@@ -42,6 +59,7 @@ export interface ILedgerEntry extends Document {
    * Sempre presente — operações com uma única entrada usam o próprio idempotencyKey como groupId.
    */
   groupId: string;
+  metadata?: ILedgerMetadata;
   createdAt: Date;
 }
 
@@ -101,6 +119,23 @@ const ledgerEntrySchema = new Schema<ILedgerEntry>(
       type: String,
       required: true,
     },
+    metadata: {
+      userId:             { type: Schema.Types.ObjectId, ref: "User" },
+      userEmail:          { type: String },
+      userName:           { type: String },
+      method:             { type: String },
+      provider:           { type: String },
+      providerId:         { type: String },
+      pixKey:             { type: String },
+      pixKeyType:         { type: String },
+      operationCreatedAt: { type: Date },
+      approvedAt:         { type: Date },
+      rejectedAt:         { type: Date },
+      adminId:            { type: Schema.Types.ObjectId, ref: "User" },
+      adminEmail:         { type: String },
+      reason:             { type: String },
+      _id:                false,
+    },
   },
   {
     timestamps: { createdAt: true, updatedAt: false },
@@ -141,5 +176,9 @@ ledgerEntrySchema.index({ groupId: 1 });
 
 // Query por tipo + período (relatórios)
 ledgerEntrySchema.index({ entryType: 1, createdAt: -1 });
+
+// Query por metadata (painel admin / reconciliação por usuário)
+ledgerEntrySchema.index({ "metadata.userEmail": 1 });
+ledgerEntrySchema.index({ "metadata.userId": 1, createdAt: -1 });
 
 export const LedgerEntry = mongoose.model<ILedgerEntry>("LedgerEntry", ledgerEntrySchema);

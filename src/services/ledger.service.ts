@@ -1,7 +1,7 @@
 import { ClientSession, Types } from "mongoose";
 import { randomUUID } from "crypto";
 import { Account, IAccount } from "../models/account.model";
-import { LedgerEntry, LedgerEntryType, LEDGER_ENTRY_TYPES } from "../models/ledger-entry.model";
+import { LedgerEntry, LedgerEntryType, LEDGER_ENTRY_TYPES, ILedgerMetadata } from "../models/ledger-entry.model";
 import { LedgerCounter } from "../models/ledger-counter.model";
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -163,6 +163,7 @@ export interface CreateEntryParams {
    */
   groupId: string;
   description?: string;
+  metadata?: Partial<ILedgerMetadata>;
   session: ClientSession;
 }
 
@@ -185,6 +186,7 @@ export async function createLedgerEntry(params: CreateEntryParams) {
     idempotencyKey,
     groupId,
     description = "",
+    metadata,
     session,
   } = params;
 
@@ -220,6 +222,7 @@ export async function createLedgerEntry(params: CreateEntryParams) {
       groupId,
       description,
       sequenceNumber,
+      ...(metadata ? { metadata } : {}),
     });
 
     await entry.save({ session });
@@ -245,9 +248,10 @@ export async function recordPixDeposit(params: {
   transactionId: string;
   netAmount: number;
   fee: number;
+  metadata?: Partial<ILedgerMetadata>;
   session: ClientSession;
 }) {
-  const { userId, transactionId, netAmount, fee, session } = params;
+  const { userId, transactionId, netAmount, fee, metadata, session } = params;
 
   console.log("[LEDGER] recordPixDeposit start", { transactionId, netAmount, fee });
 
@@ -282,6 +286,7 @@ export async function recordPixDeposit(params: {
           idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.PIX_DEPOSIT),
           groupId,
           description: `PIX depositado — net R$${netAmount.toFixed(2)}`,
+          metadata,
           session,
         })
       );
@@ -299,6 +304,7 @@ export async function recordPixDeposit(params: {
           idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.PIX_FEE),
           groupId,
           description: `Taxa PIX — R$${fee.toFixed(2)}`,
+          metadata,
           session,
         })
       );
@@ -321,9 +327,10 @@ export async function recordCryptoDeposit(params: {
   transactionId: string;
   netAmount: number;
   fee: number;
+  metadata?: Partial<ILedgerMetadata>;
   session: ClientSession;
 }) {
-  const { userId, transactionId, netAmount, fee, session } = params;
+  const { userId, transactionId, netAmount, fee, metadata, session } = params;
 
   console.log("[LEDGER] recordCryptoDeposit start", { transactionId, netAmount, fee });
 
@@ -357,6 +364,7 @@ export async function recordCryptoDeposit(params: {
           idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.CRYPTO_DEPOSIT),
           groupId,
           description: `Cripto depositada — net R$${netAmount.toFixed(2)}`,
+          metadata,
           session,
         })
       );
@@ -374,6 +382,7 @@ export async function recordCryptoDeposit(params: {
           idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.CRYPTO_FEE),
           groupId,
           description: `Taxa cripto — R$${fee.toFixed(2)}`,
+          metadata,
           session,
         })
       );
@@ -395,9 +404,10 @@ export async function recordCashoutFreeze(params: {
   userId: Types.ObjectId;
   cashoutRequestId: string;
   amount: number;
+  metadata?: Partial<ILedgerMetadata>;
   session: ClientSession;
 }) {
-  const { userId, cashoutRequestId, amount, session } = params;
+  const { userId, cashoutRequestId, amount, metadata, session } = params;
 
   console.log("[LEDGER] cashoutFreeze start", { cashoutRequestId, amount });
 
@@ -428,6 +438,7 @@ export async function recordCashoutFreeze(params: {
       idempotencyKey,
       groupId: idempotencyKey,
       description: `Saque congelado — R$${amount.toFixed(2)} aguardando aprovação`,
+      metadata,
       session,
     });
 
@@ -446,9 +457,10 @@ export async function recordCashoutFreeze(params: {
 export async function recordCashoutComplete(params: {
   cashoutRequestId: string;
   amount: number;
+  metadata?: Partial<ILedgerMetadata>;
   session: ClientSession;
 }) {
-  const { cashoutRequestId, amount, session } = params;
+  const { cashoutRequestId, amount, metadata, session } = params;
 
   console.log("[LEDGER] cashoutComplete start", { cashoutRequestId, amount });
 
@@ -479,6 +491,7 @@ export async function recordCashoutComplete(params: {
       idempotencyKey,
       groupId: idempotencyKey,
       description: `Saque concluído — R$${amount.toFixed(2)} saiu da plataforma`,
+      metadata,
       session,
     });
 
@@ -498,9 +511,10 @@ export async function recordCashoutRefund(params: {
   userId: Types.ObjectId;
   cashoutRequestId: string;
   amount: number;
+  metadata?: Partial<ILedgerMetadata>;
   session: ClientSession;
 }) {
-  const { userId, cashoutRequestId, amount, session } = params;
+  const { userId, cashoutRequestId, amount, metadata, session } = params;
 
   console.log("[LEDGER] cashoutRefund start", { cashoutRequestId, amount });
 
@@ -531,6 +545,7 @@ export async function recordCashoutRefund(params: {
       idempotencyKey,
       groupId: idempotencyKey,
       description: `Saque estornado — R$${amount.toFixed(2)} devolvido ao usuário`,
+      metadata,
       session,
     });
 

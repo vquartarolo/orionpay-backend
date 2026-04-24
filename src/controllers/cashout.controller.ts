@@ -639,6 +639,15 @@ export const createCashoutRequest = async (
         userId: user._id as Types.ObjectId,
         cashoutRequestId: cashoutId.toString(),
         amount: rawAmount,
+        metadata: {
+          userId: user._id as Types.ObjectId,
+          userEmail: user.email,
+          userName: user.name,
+          method: "pix",
+          pixKey: cleanPixKey,
+          pixKeyType,
+          operationCreatedAt: createdCashoutDoc.createdAt,
+        },
         session,
       });
 
@@ -1017,11 +1026,21 @@ export const updateCashoutStatus = async (
         await cashout.save({ session });
         await wallet.save({ session });
 
+        const userForRefundMeta = await User.findById(cashout.userId).session(session).lean();
+
         // Registra estorno no ledger
         await recordCashoutRefund({
           userId: cashout.userId as Types.ObjectId,
           cashoutRequestId: cashoutId.toString(),
           amount: frozenAmount,
+          metadata: {
+            userId: cashout.userId as Types.ObjectId,
+            userEmail: userForRefundMeta?.email,
+            userName: userForRefundMeta?.name,
+            adminId: new Types.ObjectId(payload.id),
+            reason: rejectionReason,
+            rejectedAt: cashout.approvedAt,
+          },
           session,
         });
 
@@ -1131,6 +1150,14 @@ export const updateCashoutStatus = async (
               await recordCashoutComplete({
                 cashoutRequestId: cashoutObjectId.toString(),
                 amount: Number(currentCashout.amount || 0),
+                metadata: {
+                  userId: cashout.userId,
+                  userEmail: user?.email,
+                  userName: user?.name,
+                  provider: providerResult.provider,
+                  providerId: providerResult.providerId,
+                  approvedAt: currentCashout.approvedAt,
+                },
                 session: finalizeSession,
               });
             } else if (internalStatus === "processing") {
@@ -1181,6 +1208,15 @@ export const updateCashoutStatus = async (
                 userId: currentCashout.userId as Types.ObjectId,
                 cashoutRequestId: cashoutObjectId.toString(),
                 amount: frozenAmount,
+                metadata: {
+                  userId: currentCashout.userId as Types.ObjectId,
+                  userEmail: user?.email,
+                  userName: user?.name,
+                  provider: providerResult.provider,
+                  providerId: providerResult.providerId,
+                  reason: "Falha no envio do saque ao provedor.",
+                  rejectedAt: new Date(),
+                },
                 session: finalizeSession,
               });
             }
@@ -1259,6 +1295,13 @@ export const updateCashoutStatus = async (
               userId: currentCashout.userId as Types.ObjectId,
               cashoutRequestId: cashoutObjectId.toString(),
               amount: frozenAmount,
+              metadata: {
+                userId: currentCashout.userId as Types.ObjectId,
+                userEmail: user?.email,
+                userName: user?.name,
+                reason: currentCashout.failureReason || "Erro ao enviar saque ao provedor.",
+                rejectedAt: new Date(),
+              },
               session: rollbackSession,
             });
 

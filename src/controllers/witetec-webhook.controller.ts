@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import { Transaction } from "../models/transaction.model";
 import { Wallet } from "../models/wallet.model";
 import { CashoutRequest } from "../models/cashoutRequest.model";
+import { User } from "../models/user.model";
 import { recordPixDeposit } from "../services/ledger.service";
 
 const BASE_URL = process.env.WITETEC_BASE_URL ?? "https://api.witetec.net";
@@ -88,6 +89,8 @@ async function creditWallet(
       const wallet = await Wallet.findOne({ userId: tx.userId }).session(session);
       if (!wallet) throw new Error("WALLET_NOT_FOUND");
 
+      const txUser = await User.findById(tx.userId).session(session).lean();
+
       // Idempotência de terceiro nível: wallet.log já contém esta transação
       const alreadyLogged = wallet.log.some(
         (entry: any) => entry.transactionId?.toString() === tx._id.toString()
@@ -139,6 +142,16 @@ async function creditWallet(
         transactionId: tx._id.toString(),
         netAmount: tx.netAmount,
         fee: tx.fee,
+        metadata: {
+          userId: tx.userId,
+          userEmail: txUser?.email,
+          userName: txUser?.name,
+          method: "pix",
+          provider: tx.provider,
+          providerId: tx.pix?.endToEndId || tx.providerId || "",
+          operationCreatedAt: tx.createdAt,
+          approvedAt: tx.approvedAt,
+        },
         session,
       });
       console.log(`[LEDGER] PIX deposit success ${tx._id}`);
