@@ -399,30 +399,44 @@ export async function recordCashoutFreeze(params: {
 }) {
   const { userId, cashoutRequestId, amount, session } = params;
 
-  const [userAcc, reserve] = await Promise.all([
-    getUserAccount(userId, session),
-    getPlatformAccount("cashout_reserve", session),
-  ]);
+  console.log("[LEDGER] cashoutFreeze start", { cashoutRequestId, amount });
 
-  assertSameCurrency(userAcc, reserve);
+  try {
+    // Sequential — MongoDB rejeita múltiplas operações concorrentes na mesma session
+    const userAcc = await getUserAccount(userId, session);
+    const reserve = await getPlatformAccount("cashout_reserve", session);
 
-  const idempotencyKey = makeLedgerIdempotencyKey(
-    cashoutRequestId,
-    LEDGER_ENTRY_TYPES.CASHOUT_FREEZE
-  );
+    console.log("[LEDGER] cashoutFreeze accounts resolved", {
+      userAcc: userAcc._id.toString(),
+      reserve: reserve._id.toString(),
+    });
 
-  return createLedgerEntry({
-    debitAccount: userAcc,
-    creditAccount: reserve,
-    amount,
-    entryType: LEDGER_ENTRY_TYPES.CASHOUT_FREEZE,
-    referenceId: cashoutRequestId,
-    referenceModel: "CashoutRequest",
-    idempotencyKey,
-    groupId: idempotencyKey, // operação de entrada única: groupId = idempotencyKey
-    description: `Saque congelado — R$${amount.toFixed(2)} aguardando aprovação`,
-    session,
-  });
+    assertSameCurrency(userAcc, reserve);
+
+    const idempotencyKey = makeLedgerIdempotencyKey(
+      cashoutRequestId,
+      LEDGER_ENTRY_TYPES.CASHOUT_FREEZE
+    );
+
+    const entry = await createLedgerEntry({
+      debitAccount: userAcc,
+      creditAccount: reserve,
+      amount,
+      entryType: LEDGER_ENTRY_TYPES.CASHOUT_FREEZE,
+      referenceId: cashoutRequestId,
+      referenceModel: "CashoutRequest",
+      idempotencyKey,
+      groupId: idempotencyKey,
+      description: `Saque congelado — R$${amount.toFixed(2)} aguardando aprovação`,
+      session,
+    });
+
+    console.log("[LEDGER] cashoutFreeze success", entry._id.toString());
+    return entry;
+  } catch (error) {
+    console.error("[LEDGER] cashoutFreeze FAILED", { cashoutRequestId, error });
+    throw error;
+  }
 }
 
 /**
@@ -436,30 +450,44 @@ export async function recordCashoutComplete(params: {
 }) {
   const { cashoutRequestId, amount, session } = params;
 
-  const [reserve, platformFloat] = await Promise.all([
-    getPlatformAccount("cashout_reserve", session),
-    getPlatformAccount("platform_float", session),
-  ]);
+  console.log("[LEDGER] cashoutComplete start", { cashoutRequestId, amount });
 
-  assertSameCurrency(reserve, platformFloat);
+  try {
+    // Sequential — MongoDB rejeita múltiplas operações concorrentes na mesma session
+    const reserve = await getPlatformAccount("cashout_reserve", session);
+    const platformFloat = await getPlatformAccount("platform_float", session);
 
-  const idempotencyKey = makeLedgerIdempotencyKey(
-    cashoutRequestId,
-    LEDGER_ENTRY_TYPES.CASHOUT_COMPLETE
-  );
+    console.log("[LEDGER] cashoutComplete accounts resolved", {
+      reserve: reserve._id.toString(),
+      platformFloat: platformFloat._id.toString(),
+    });
 
-  return createLedgerEntry({
-    debitAccount: reserve,
-    creditAccount: platformFloat,
-    amount,
-    entryType: LEDGER_ENTRY_TYPES.CASHOUT_COMPLETE,
-    referenceId: cashoutRequestId,
-    referenceModel: "CashoutRequest",
-    idempotencyKey,
-    groupId: idempotencyKey,
-    description: `Saque concluído — R$${amount.toFixed(2)} saiu da plataforma`,
-    session,
-  });
+    assertSameCurrency(reserve, platformFloat);
+
+    const idempotencyKey = makeLedgerIdempotencyKey(
+      cashoutRequestId,
+      LEDGER_ENTRY_TYPES.CASHOUT_COMPLETE
+    );
+
+    const entry = await createLedgerEntry({
+      debitAccount: reserve,
+      creditAccount: platformFloat,
+      amount,
+      entryType: LEDGER_ENTRY_TYPES.CASHOUT_COMPLETE,
+      referenceId: cashoutRequestId,
+      referenceModel: "CashoutRequest",
+      idempotencyKey,
+      groupId: idempotencyKey,
+      description: `Saque concluído — R$${amount.toFixed(2)} saiu da plataforma`,
+      session,
+    });
+
+    console.log("[LEDGER] cashoutComplete success", entry._id.toString());
+    return entry;
+  } catch (error) {
+    console.error("[LEDGER] cashoutComplete FAILED", { cashoutRequestId, error });
+    throw error;
+  }
 }
 
 /**
@@ -474,30 +502,44 @@ export async function recordCashoutRefund(params: {
 }) {
   const { userId, cashoutRequestId, amount, session } = params;
 
-  const [reserve, userAcc] = await Promise.all([
-    getPlatformAccount("cashout_reserve", session),
-    getUserAccount(userId, session),
-  ]);
+  console.log("[LEDGER] cashoutRefund start", { cashoutRequestId, amount });
 
-  assertSameCurrency(reserve, userAcc);
+  try {
+    // Sequential — MongoDB rejeita múltiplas operações concorrentes na mesma session
+    const reserve = await getPlatformAccount("cashout_reserve", session);
+    const userAcc = await getUserAccount(userId, session);
 
-  const idempotencyKey = makeLedgerIdempotencyKey(
-    cashoutRequestId,
-    LEDGER_ENTRY_TYPES.CASHOUT_REFUND
-  );
+    console.log("[LEDGER] cashoutRefund accounts resolved", {
+      reserve: reserve._id.toString(),
+      userAcc: userAcc._id.toString(),
+    });
 
-  return createLedgerEntry({
-    debitAccount: reserve,
-    creditAccount: userAcc,
-    amount,
-    entryType: LEDGER_ENTRY_TYPES.CASHOUT_REFUND,
-    referenceId: cashoutRequestId,
-    referenceModel: "CashoutRequest",
-    idempotencyKey,
-    groupId: idempotencyKey,
-    description: `Saque estornado — R$${amount.toFixed(2)} devolvido ao usuário`,
-    session,
-  });
+    assertSameCurrency(reserve, userAcc);
+
+    const idempotencyKey = makeLedgerIdempotencyKey(
+      cashoutRequestId,
+      LEDGER_ENTRY_TYPES.CASHOUT_REFUND
+    );
+
+    const entry = await createLedgerEntry({
+      debitAccount: reserve,
+      creditAccount: userAcc,
+      amount,
+      entryType: LEDGER_ENTRY_TYPES.CASHOUT_REFUND,
+      referenceId: cashoutRequestId,
+      referenceModel: "CashoutRequest",
+      idempotencyKey,
+      groupId: idempotencyKey,
+      description: `Saque estornado — R$${amount.toFixed(2)} devolvido ao usuário`,
+      session,
+    });
+
+    console.log("[LEDGER] cashoutRefund success", entry._id.toString());
+    return entry;
+  } catch (error) {
+    console.error("[LEDGER] cashoutRefund FAILED", { cashoutRequestId, error });
+    throw error;
+  }
 }
 
 // ── Reconciliação ─────────────────────────────────────────────────────────────
