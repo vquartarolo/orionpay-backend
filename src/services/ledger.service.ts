@@ -241,52 +241,67 @@ export async function recordPixDeposit(params: {
 }) {
   const { userId, transactionId, netAmount, fee, session } = params;
 
-  const [userAcc, platformFloat, feeIncome] = await Promise.all([
-    getUserAccount(userId, session),
-    getPlatformAccount("platform_float", session),
-    getPlatformAccount("fee_income", session),
-  ]);
+  console.log("[LEDGER] recordPixDeposit start", { transactionId, netAmount, fee });
 
-  assertSameCurrency(platformFloat, userAcc);
+  try {
+    // Sequential — MongoDB rejeita múltiplas operações concorrentes na mesma session
+    const userAcc = await getUserAccount(userId, session);
+    const platformFloat = await getPlatformAccount("platform_float", session);
+    const feeIncome = await getPlatformAccount("fee_income", session);
 
-  const groupId = randomUUID();
-  const entries = [];
+    console.log("[LEDGER] accounts resolved", {
+      userAcc: userAcc._id.toString(),
+      userCurrency: userAcc.currency,
+      platformFloat: platformFloat._id.toString(),
+      platformCurrency: platformFloat.currency,
+      feeIncome: feeIncome._id.toString(),
+    });
 
-  if (netAmount > 0) {
-    entries.push(
-      await createLedgerEntry({
-        debitAccount: platformFloat,
-        creditAccount: userAcc,
-        amount: netAmount,
-        entryType: LEDGER_ENTRY_TYPES.PIX_DEPOSIT,
-        referenceId: transactionId,
-        referenceModel: "Transaction",
-        idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.PIX_DEPOSIT),
-        groupId,
-        description: `PIX depositado — net R$${netAmount.toFixed(2)}`,
-        session,
-      })
-    );
+    assertSameCurrency(platformFloat, userAcc);
+
+    const groupId = randomUUID();
+    const entries = [];
+
+    if (netAmount > 0) {
+      entries.push(
+        await createLedgerEntry({
+          debitAccount: platformFloat,
+          creditAccount: userAcc,
+          amount: netAmount,
+          entryType: LEDGER_ENTRY_TYPES.PIX_DEPOSIT,
+          referenceId: transactionId,
+          referenceModel: "Transaction",
+          idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.PIX_DEPOSIT),
+          groupId,
+          description: `PIX depositado — net R$${netAmount.toFixed(2)}`,
+          session,
+        })
+      );
+    }
+
+    if (fee > 0) {
+      entries.push(
+        await createLedgerEntry({
+          debitAccount: platformFloat,
+          creditAccount: feeIncome,
+          amount: fee,
+          entryType: LEDGER_ENTRY_TYPES.PIX_FEE,
+          referenceId: transactionId,
+          referenceModel: "Transaction",
+          idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.PIX_FEE),
+          groupId,
+          description: `Taxa PIX — R$${fee.toFixed(2)}`,
+          session,
+        })
+      );
+    }
+
+    console.log("[LEDGER] recordPixDeposit end — entries criadas:", entries.length);
+    return entries;
+  } catch (error) {
+    console.error("[LEDGER] recordPixDeposit FAILED", error);
+    throw error;
   }
-
-  if (fee > 0) {
-    entries.push(
-      await createLedgerEntry({
-        debitAccount: platformFloat,
-        creditAccount: feeIncome,
-        amount: fee,
-        entryType: LEDGER_ENTRY_TYPES.PIX_FEE,
-        referenceId: transactionId,
-        referenceModel: "Transaction",
-        idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.PIX_FEE),
-        groupId,
-        description: `Taxa PIX — R$${fee.toFixed(2)}`,
-        session,
-      })
-    );
-  }
-
-  return entries;
 }
 
 /**
@@ -302,52 +317,66 @@ export async function recordCryptoDeposit(params: {
 }) {
   const { userId, transactionId, netAmount, fee, session } = params;
 
-  const [userAcc, platformFloat, feeIncome] = await Promise.all([
-    getUserAccount(userId, session),
-    getPlatformAccount("platform_float", session),
-    getPlatformAccount("fee_income", session),
-  ]);
+  console.log("[LEDGER] recordCryptoDeposit start", { transactionId, netAmount, fee });
 
-  assertSameCurrency(platformFloat, userAcc);
+  try {
+    // Sequential — MongoDB rejeita múltiplas operações concorrentes na mesma session
+    const userAcc = await getUserAccount(userId, session);
+    const platformFloat = await getPlatformAccount("platform_float", session);
+    const feeIncome = await getPlatformAccount("fee_income", session);
 
-  const groupId = randomUUID();
-  const entries = [];
+    console.log("[LEDGER] accounts resolved", {
+      userAcc: userAcc._id.toString(),
+      userCurrency: userAcc.currency,
+      platformFloat: platformFloat._id.toString(),
+      platformCurrency: platformFloat.currency,
+    });
 
-  if (netAmount > 0) {
-    entries.push(
-      await createLedgerEntry({
-        debitAccount: platformFloat,
-        creditAccount: userAcc,
-        amount: netAmount,
-        entryType: LEDGER_ENTRY_TYPES.CRYPTO_DEPOSIT,
-        referenceId: transactionId,
-        referenceModel: "Transaction",
-        idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.CRYPTO_DEPOSIT),
-        groupId,
-        description: `Cripto depositada — net R$${netAmount.toFixed(2)}`,
-        session,
-      })
-    );
+    assertSameCurrency(platformFloat, userAcc);
+
+    const groupId = randomUUID();
+    const entries = [];
+
+    if (netAmount > 0) {
+      entries.push(
+        await createLedgerEntry({
+          debitAccount: platformFloat,
+          creditAccount: userAcc,
+          amount: netAmount,
+          entryType: LEDGER_ENTRY_TYPES.CRYPTO_DEPOSIT,
+          referenceId: transactionId,
+          referenceModel: "Transaction",
+          idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.CRYPTO_DEPOSIT),
+          groupId,
+          description: `Cripto depositada — net R$${netAmount.toFixed(2)}`,
+          session,
+        })
+      );
+    }
+
+    if (fee > 0) {
+      entries.push(
+        await createLedgerEntry({
+          debitAccount: platformFloat,
+          creditAccount: feeIncome,
+          amount: fee,
+          entryType: LEDGER_ENTRY_TYPES.CRYPTO_FEE,
+          referenceId: transactionId,
+          referenceModel: "Transaction",
+          idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.CRYPTO_FEE),
+          groupId,
+          description: `Taxa cripto — R$${fee.toFixed(2)}`,
+          session,
+        })
+      );
+    }
+
+    console.log("[LEDGER] recordCryptoDeposit end — entries criadas:", entries.length);
+    return entries;
+  } catch (error) {
+    console.error("[LEDGER] recordCryptoDeposit FAILED", error);
+    throw error;
   }
-
-  if (fee > 0) {
-    entries.push(
-      await createLedgerEntry({
-        debitAccount: platformFloat,
-        creditAccount: feeIncome,
-        amount: fee,
-        entryType: LEDGER_ENTRY_TYPES.CRYPTO_FEE,
-        referenceId: transactionId,
-        referenceModel: "Transaction",
-        idempotencyKey: makeLedgerIdempotencyKey(transactionId, LEDGER_ENTRY_TYPES.CRYPTO_FEE),
-        groupId,
-        description: `Taxa cripto — R$${fee.toFixed(2)}`,
-        session,
-      })
-    );
-  }
-
-  return entries;
 }
 
 /**
