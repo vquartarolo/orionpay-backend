@@ -29,6 +29,12 @@ export interface ICashoutRequest extends Document {
   method: CashoutMethod;
   status: CashoutStatus;
 
+  riskScore?: number;
+  riskDecision?: "allow" | "review" | "block";
+  riskReasons?: string[];
+  riskReviewedBy?: Types.ObjectId | null;
+  riskReviewedAt?: Date | null;
+
   provider: CashoutProvider;
   providerReference: string;
   providerIdempotencyKey: string;
@@ -212,6 +218,29 @@ const cashoutRequestSchema = new Schema<ICashoutRequest>(
         default: "",
         trim: true,
       },
+    },
+
+    riskScore: {
+      type: Number,
+      default: null,
+    },
+    riskDecision: {
+      type: String,
+      enum: ["allow", "review", "block"],
+      default: null,
+    },
+    riskReasons: {
+      type: [String],
+      default: [],
+    },
+    riskReviewedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    riskReviewedAt: {
+      type: Date,
+      default: null,
     },
 
     webhook: {

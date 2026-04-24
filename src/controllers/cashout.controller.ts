@@ -15,6 +15,10 @@ import {
   syncWithdrawalFromWitetec,
   pollPendingWitetecWithdrawals,
 } from "../services/witetec-withdrawal.service";
+import {
+  checkCashoutRisk,
+  logRiskDecision,
+} from "../services/risk.service";
 
 type ZendryAuthResponse = {
   access_token?: string;
@@ -553,6 +557,44 @@ export const createCashoutRequest = async (
       return;
     }
 
+    // ── Motor de risco (read-only, fora da transaction) ───────────────────
+    const riskResult = await checkCashoutRisk({
+      userId: payload.id,
+      amount: rawAmount,
+      pixKey: cleanPixKey,
+      ipAddress: req.ip || "",
+      userAgent: String(req.headers["user-agent"] || ""),
+    });
+
+    console.log(
+      `[RISK] userId=${payload.id} amount=${rawAmount} ` +
+        `score=${riskResult.score} decision=${riskResult.decision} ` +
+        `reasons=[${riskResult.reasons.join(" | ")}]`
+    );
+
+    if (riskResult.decision === "block") {
+      await logRiskDecision({
+        userId: payload.id,
+        action: "cashout_request",
+        amount: rawAmount,
+        riskScore: riskResult.score,
+        decision: "block",
+        reasons: riskResult.reasons,
+        ipAddress: req.ip || "",
+        userAgent: String(req.headers["user-agent"] || ""),
+        metadata: { pixKey: cleanPixKey, pixKeyType },
+      });
+
+      cashoutError(
+        res,
+        403,
+        "RISK_BLOCKED",
+        "Solicitação bloqueada por política de segurança. Entre em contato com o suporte."
+      );
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     let responsePayload: Record<string, unknown> | null = null;
 
     await session.withTransaction(async () => {
@@ -593,6 +635,9 @@ export const createCashoutRequest = async (
             receiverDocument,
             status: "pending_admin",
             failureReason: "",
+            riskScore: riskResult.score,
+            riskDecision: riskResult.decision,
+            riskReasons: riskResult.reasons,
             requestMeta: {
               ipAddress: req.ip || "",
               userAgent: String(req.headers["user-agent"] || ""),
@@ -670,9 +715,28 @@ export const createCashoutRequest = async (
           receiverName: createdCashoutDoc.receiverName,
           receiverDocument: createdCashoutDoc.receiverDocument,
           createdAt: createdCashoutDoc.createdAt,
+          riskScore: riskResult.score,
+          riskDecision: riskResult.decision,
         },
         saldo: wallet.balance,
       };
+    });
+
+    // Log de risco fora da transaction (não bloqueia rollback em caso de falha)
+    await logRiskDecision({
+      userId: payload.id,
+      action: "cashout_request",
+      amount: rawAmount,
+      riskScore: riskResult.score,
+      decision: riskResult.decision,
+      reasons: riskResult.reasons,
+      ipAddress: req.ip || "",
+      userAgent: String(req.headers["user-agent"] || ""),
+      metadata: {
+        pixKey: cleanPixKey,
+        pixKeyType,
+        cashoutId: (responsePayload as any)?.cashoutId,
+      },
     });
 
     res.status(201).json(responsePayload);
@@ -767,6 +831,9 @@ export const listCashoutRequests = async (
           createdAt: cashout.createdAt,
           walletFrozenAmount: walletEntry?.amount ?? Number(cashout.amount || 0),
           description: walletEntry?.description || "",
+          riskScore: cashout.riskScore ?? null,
+          riskDecision: cashout.riskDecision ?? null,
+          riskReasons: cashout.riskReasons ?? [],
         };
       }),
     });
