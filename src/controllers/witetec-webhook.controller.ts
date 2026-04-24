@@ -1,8 +1,10 @@
 import axios from "axios";
+import mongoose from "mongoose";
 import type { Request, Response } from "express";
 import { Transaction } from "../models/transaction.model";
 import { Wallet } from "../models/wallet.model";
 import { CashoutRequest } from "../models/cashoutRequest.model";
+import { recordPixDeposit } from "../services/ledger.service";
 
 const BASE_URL = process.env.WITETEC_BASE_URL ?? "https://api.witetec.net";
 
@@ -53,6 +55,7 @@ async function creditWallet(
   transaction: InstanceType<typeof Transaction>,
   req: Request
 ): Promise<{ ok: boolean; msg: string }> {
+  // Idempotência de primeiro nível — fora da session, sem IO pesado
   if (transaction.status === "approved") {
     console.log(
       `[WITETEC WEBHOOK] Idempotência: tx ${transaction._id} já estava aprovada.`
@@ -67,58 +70,93 @@ async function creditWallet(
     };
   }
 
-  const wallet = await Wallet.findOne({ userId: transaction.userId });
-  if (!wallet) {
-    return { ok: false, msg: "Carteira do usuário não encontrada." };
+  const session = await mongoose.startSession();
+  let outcome: { ok: boolean; msg: string } | null = null;
+
+  try {
+    await session.withTransaction(async () => {
+      // Recarrega dentro da session para garantir leitura consistente
+      const tx = await Transaction.findById(transaction._id).session(session);
+      if (!tx) throw new Error("TX_NOT_FOUND");
+
+      // Idempotência de segundo nível (dentro da session)
+      if (tx.status === "approved") {
+        outcome = { ok: true, msg: "Transação já aprovada (idempotência)." };
+        return;
+      }
+
+      const wallet = await Wallet.findOne({ userId: tx.userId }).session(session);
+      if (!wallet) throw new Error("WALLET_NOT_FOUND");
+
+      // Idempotência de terceiro nível: wallet.log já contém esta transação
+      const alreadyLogged = wallet.log.some(
+        (entry: any) => entry.transactionId?.toString() === tx._id.toString()
+      );
+
+      if (alreadyLogged) {
+        tx.status = "approved";
+        await tx.save({ session });
+        console.log(
+          `[WITETEC WEBHOOK] Idempotência: wallet já tinha log para tx ${tx._id}.`
+        );
+        outcome = { ok: true, msg: "Já processado anteriormente." };
+        return;
+      }
+
+      // Atualiza transação
+      tx.status = "approved";
+      tx.approvedAt = new Date();
+      tx.providerStatus = transaction.providerStatus; // propaga mudança do handler externo
+      tx.pix = {
+        ...(tx.pix || {}),
+        paidAt: new Date(),
+        endToEndId: tx.pix?.endToEndId || `WIT-${Date.now()}`,
+      };
+      await tx.save({ session });
+
+      // Credita wallet
+      wallet.balance.available += tx.netAmount;
+      wallet.log.push({
+        transactionId: tx._id,
+        type: "topup",
+        method: "pix",
+        amount: tx.netAmount,
+        status: "approved",
+        description: tx.description || "PIX aprovado — Witetec",
+        createdAt: new Date(),
+        security: {
+          createdAt: new Date(),
+          ipAddress: req.ip || "webhook",
+          userAgent: String(req.headers["user-agent"] || "witetec-webhook"),
+        },
+      });
+      await wallet.save({ session });
+
+      // Registra no ledger double-entry — atômico com wallet update acima
+      console.log(`[LEDGER] PIX deposit start ${tx._id}`);
+      await recordPixDeposit({
+        userId: tx.userId,
+        transactionId: tx._id.toString(),
+        netAmount: tx.netAmount,
+        fee: tx.fee,
+        session,
+      });
+      console.log(`[LEDGER] PIX deposit success ${tx._id}`);
+
+      console.log(
+        `[WITETEC WEBHOOK] WALLET CREDITED — userId=${tx.userId} amount=${tx.netAmount} tx=${tx._id}`
+      );
+
+      outcome = { ok: true, msg: "Saldo creditado com sucesso." };
+    });
+  } catch (err) {
+    console.error(`[LEDGER] PIX deposit error`, err);
+    return { ok: false, msg: "Erro interno ao creditar wallet." };
+  } finally {
+    await session.endSession();
   }
 
-  const alreadyLogged = wallet.log.some(
-    (entry: any) =>
-      entry.transactionId?.toString() === transaction._id.toString()
-  );
-
-  if (alreadyLogged) {
-    transaction.status = "approved";
-    await transaction.save();
-    console.log(
-      `[WITETEC WEBHOOK] Idempotência: wallet já tinha log para tx ${transaction._id}.`
-    );
-    return { ok: true, msg: "Já processado anteriormente." };
-  }
-
-  transaction.status = "approved";
-  transaction.approvedAt = new Date();
-  transaction.pix = {
-    ...(transaction.pix || {}),
-    paidAt: new Date(),
-    endToEndId: transaction.pix?.endToEndId || `WIT-${Date.now()}`,
-  };
-  await transaction.save();
-
-  wallet.balance.available += transaction.netAmount;
-
-  wallet.log.push({
-    transactionId: transaction._id,
-    type: "topup",
-    method: "pix",
-    amount: transaction.netAmount,
-    status: "approved",
-    description: transaction.description || "PIX aprovado — Witetec",
-    createdAt: new Date(),
-    security: {
-      createdAt: new Date(),
-      ipAddress: req.ip || "webhook",
-      userAgent: String(req.headers["user-agent"] || "witetec-webhook"),
-    },
-  });
-
-  await wallet.save();
-
-  console.log(
-    `[WITETEC WEBHOOK] WALLET CREDITED — userId=${transaction.userId} amount=${transaction.netAmount} tx=${transaction._id}`
-  );
-
-  return { ok: true, msg: "Saldo creditado com sucesso." };
+  return outcome ?? { ok: false, msg: "Erro interno ao processar aprovação." };
 }
 
 // ── Handler de webhook de DEPÓSITO (TRANSACTION_*) ───────────────────────────
