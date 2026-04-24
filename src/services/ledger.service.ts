@@ -194,34 +194,42 @@ export async function createLedgerEntry(params: CreateEntryParams) {
 
   const currency = debitAccount.currency;
 
-  // Soft guard: retorna existente sem erro nem log de aviso excessivo
+  // Soft guard: retorna existente sem erro (idempotência)
   const existing = await LedgerEntry.findOne({ idempotencyKey }, null, { session });
   if (existing) {
+    console.log("[LEDGER] createLedgerEntry — idempotente, retornando existente:", idempotencyKey);
     return existing;
   }
 
   const sequenceNumber = await nextSeq(session);
 
-  const [entry] = await LedgerEntry.create(
-    [
-      {
-        debitAccountId: debitAccount._id,
-        creditAccountId: creditAccount._id,
-        amount,
-        currency,
-        entryType,
-        referenceId,
-        referenceModel,
-        idempotencyKey,
-        groupId,
-        description,
-        sequenceNumber,
-      },
-    ],
-    { session }
-  );
+  console.log("[LEDGER] createLedgerEntry — salvando", { idempotencyKey, sequenceNumber, amount, entryType });
 
-  return entry;
+  try {
+    // new + save({ session }) é a forma canônica para usar sessions no Mongoose.
+    // Model.create([array], { session }) tem comportamento inconsistente dentro de withTransaction.
+    const entry = new LedgerEntry({
+      debitAccountId: debitAccount._id,
+      creditAccountId: creditAccount._id,
+      amount,
+      currency,
+      entryType,
+      referenceId,
+      referenceModel,
+      idempotencyKey,
+      groupId,
+      description,
+      sequenceNumber,
+    });
+
+    await entry.save({ session });
+
+    console.log("[LEDGER] ENTRY SAVED", entry._id.toString());
+    return entry;
+  } catch (error) {
+    console.error("[LEDGER] createLedgerEntry FAILED", { idempotencyKey, sequenceNumber, error });
+    throw error;
+  }
 }
 
 // ── Operações de domínio ──────────────────────────────────────────────────────
