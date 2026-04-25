@@ -6,12 +6,22 @@ export type AccountType =
   | "fee_income"
   | "cashout_reserve";
 
+export type AccountingCategory = "asset" | "liability" | "revenue" | "expense" | "adjustment";
+
+export const ACCOUNT_CATEGORY_MAP: Record<AccountType, AccountingCategory> = {
+  user_wallet:     "asset",
+  platform_float:  "asset",
+  cashout_reserve: "liability",
+  fee_income:      "revenue",
+};
+
 export interface IAccount extends Document {
   _id: Types.ObjectId;
   type: AccountType;
   ownerId: Types.ObjectId | null;
   label: string;
   currency: string;
+  accountingCategory: AccountingCategory;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -41,9 +51,20 @@ const accountSchema = new Schema<IAccount>(
       trim: true,
       uppercase: true,
     },
+    accountingCategory: {
+      type: String,
+      enum: ["asset", "liability", "revenue", "expense", "adjustment"],
+      index: true,
+    },
   },
   { timestamps: true }
 );
+
+// Auto-set accountingCategory from type on every save
+accountSchema.pre("save", function (next) {
+  this.accountingCategory = ACCOUNT_CATEGORY_MAP[this.type] ?? "asset";
+  next();
+});
 
 // Garante unicidade das contas de plataforma (apenas 1 por tipo)
 accountSchema.index(

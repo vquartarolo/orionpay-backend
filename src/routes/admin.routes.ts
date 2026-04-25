@@ -20,6 +20,8 @@ import {
 } from "../controllers/admin.controller";
 import { runReconciliation } from "../controllers/reconciliation.controller";
 import approvalRoutes from "./approval.routes";
+import accountingRoutes  from "./accounting.routes";
+import complianceRoutes  from "./compliance.routes";
 
 const router = Router();
 
@@ -73,5 +75,11 @@ router.post("/reconcile", requireAuth, requireRole(["admin", "master"]), runReco
 
 // Maker-checker — governança de aprovações
 router.use("/approvals", approvalRoutes);
+
+// Contabilidade e relatórios financeiros
+router.use("/accounting", accountingRoutes);
+
+// Compliance documental — relatórios e PDFs
+router.use("/compliance", complianceRoutes);
 
 export default router;

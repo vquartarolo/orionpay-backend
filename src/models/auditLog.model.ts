@@ -30,6 +30,12 @@ export const AUDIT_ACTIONS = [
   // Governança — cashout via approval flow
   "cashout_approved",
   "cashout_rejected",
+  // Contabilidade — relatórios e exportação
+  "accounting_report_generated",
+  "accounting_export",
+  // Compliance — relatórios documentais
+  "compliance_report_generated",
+  "compliance_pdf_generated",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
