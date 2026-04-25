@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { decodeToken } from "../config/auth";
 import { User, UserAccountStatus, UserStatus, UserRole } from "../models/user.model";
+import { ROLE_PERMISSIONS } from "../models/permission.model";
 
 export type AppRole = UserRole | "master";
 
@@ -11,6 +12,7 @@ export interface AuthenticatedUser {
   accountStatus: UserAccountStatus;
   emailVerified: boolean;
   twofaEnabled: boolean;
+  permissions: string[];
   user: {
     _id: string;
     name: string;
@@ -125,7 +127,7 @@ export async function requireAuth(
     await touchSession(payload.sid);
 
     const user = await User.findById(payload.id)
-      .select("_id name email role status accountStatus emailVerified twofaEnabled")
+      .select("_id name email role status accountStatus emailVerified twofaEnabled permissions")
       .lean();
 
     if (!user) {
@@ -170,7 +172,8 @@ export async function requireAuth(
       status,
       accountStatus,
       emailVerified: Boolean(user.emailVerified),
-      twofaEnabled: Boolean(user.twofaEnabled),
+      twofaEnabled:  Boolean(user.twofaEnabled),
+      permissions:   Array.isArray((user as any).permissions) ? (user as any).permissions : [],
       user: {
         _id: String(user._id),
         name: String(user.name || ""),
@@ -359,6 +362,29 @@ export function requireSellerAccess(
   }
 
   next();
+}
+
+/**
+ * Verifica se o usuário possui uma permissão granular específica.
+ * Combina as permissões padrão do role com as permissões individuais do usuário.
+ */
+export function requirePermission(permission: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.authUser) {
+      res.status(401).json({ status: false, msg: "Usuário não autenticado." });
+      return;
+    }
+
+    const rolePerms = ROLE_PERMISSIONS[req.authUser.role] ?? [];
+    const userPerms = req.authUser.permissions ?? [];
+
+    if (!rolePerms.includes(permission) && !userPerms.includes(permission)) {
+      res.status(403).json({ status: false, msg: "Permissão insuficiente." });
+      return;
+    }
+
+    next();
+  };
 }
 
 /**

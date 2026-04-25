@@ -36,6 +36,10 @@ export const AUDIT_ACTIONS = [
   // Compliance — relatórios documentais
   "compliance_report_generated",
   "compliance_pdf_generated",
+  // Segurança — freeze automático
+  "user_auto_frozen",
+  // Segurança — backup
+  "backup_created",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

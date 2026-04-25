@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { healthCheck } from "../controllers/health.controller";
 
 import authRoutes from "./auth.routes";
 import userRoutes from "./user.routes";
@@ -31,5 +32,7 @@ router.use("/domains", domainRoutes);
 // compatibilidade dupla
 router.use("/checkout", checkoutRoutes);
 router.use("/checkouts", checkoutRoutes);
+
+router.get("/health", healthCheck);
 
 export default router;

@@ -120,6 +120,8 @@ export interface IUser extends Document {
 
   avatar?: string;
 
+  permissions: string[];
+
   passwordResetToken: string;
   passwordResetExpires: Date | null;
 
@@ -286,6 +288,11 @@ const userSchema = new Schema<IUser>(
     emailVerificationExpires: {
       type: Date,
       default: null,
+    },
+
+    permissions: {
+      type: [String],
+      default: [],
     },
 
     passwordResetToken: {

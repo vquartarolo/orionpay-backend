@@ -22,6 +22,8 @@ import { runReconciliation } from "../controllers/reconciliation.controller";
 import approvalRoutes from "./approval.routes";
 import accountingRoutes  from "./accounting.routes";
 import complianceRoutes  from "./compliance.routes";
+import securityRoutes    from "./security.routes";
+import { createBackup, downloadBackup } from "../controllers/backup.controller";
 
 const router = Router();
 
@@ -81,5 +83,12 @@ router.use("/accounting", accountingRoutes);
 
 // Compliance documental — relatórios e PDFs
 router.use("/compliance", complianceRoutes);
+
+// Segurança — SOC / eventos
+router.use("/security", securityRoutes);
+
+// Backup — exportação JSON do banco
+router.post("/backup",          requireAuth, requireRole(["admin", "master"]), createBackup);
+router.get("/backup/download",  requireAuth, requireRole(["admin", "master"]), downloadBackup);
 
 export default router;
